@@ -173,6 +173,20 @@ struct ShellKeyboardNavigation: ViewModifier {
 }
 
 #if os(iOS)
+extension UIResponder {
+    nonisolated(unsafe) private static weak var shellFound: UIResponder?
+    @objc private func shellReportFirstResponder(_ sender: Any?) { UIResponder.shellFound = self }
+
+    /// A text field or view of any screen is being typed in. The key command view below took the first responder back at
+    /// every update of the views it sits in, and the keyboard opening resizes them: a field on a screen presented over the
+    /// shell ("Receive from PC") lost the keyboard as soon as it showed it, so nothing could be typed or pasted there.
+    @MainActor static var shellTextIsBeingEdited: Bool {
+        shellFound = nil
+        UIApplication.shared.sendAction(#selector(shellReportFirstResponder(_:)), to: nil, from: nil, for: nil)   // reaches the first responder
+        return shellFound is UITextInput
+    }
+}
+
 private struct ShellKeyCommands: UIViewRepresentable {
     let active: Bool
     let handle: (ShellInput.Action) -> Void
@@ -180,7 +194,7 @@ private struct ShellKeyCommands: UIViewRepresentable {
     func updateUIView(_ view: CommandView, context: Context) {
         view.active = active
         view.handle = handle
-        if active, view.window != nil, !view.isFirstResponder { view.becomeFirstResponder() }
+        if active, view.window != nil, !view.isFirstResponder, !UIResponder.shellTextIsBeingEdited { view.becomeFirstResponder() }
         else if !active, view.isFirstResponder { view.resignFirstResponder() }
     }
     final class CommandView: UIView {
@@ -197,7 +211,7 @@ private struct ShellKeyCommands: UIViewRepresentable {
         }
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            if active, window != nil { becomeFirstResponder() }
+            if active, window != nil, !UIResponder.shellTextIsBeingEdited { becomeFirstResponder() }
         }
         @objc private func command(_ command: UIKeyCommand) {
             guard active, let action = Self.actions.first(where: { $0.0 == command.input })?.1 else { return }
