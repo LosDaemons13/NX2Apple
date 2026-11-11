@@ -3042,7 +3042,7 @@ class MainWindow(QMainWindow):
         running_id = (q.current or self.m.build_key) if self.m.running else ''
         rows = queue_rows(self.m.library.games, running_id=running_id or '', queue=q,
                           unsupported=self.m.unsupported_version_for)
-        dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, parent=self)
+        dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, waiting=list(q.waiting), parent=self)
         if not dlg.exec() or not dlg.chosen:
             return
         if self.m.running:

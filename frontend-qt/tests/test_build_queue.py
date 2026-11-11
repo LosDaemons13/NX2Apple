@@ -160,6 +160,31 @@ class QueueInTheWindowTests(unittest.TestCase):
         self._wire()
         self.assertFalse(self.w._queue_after_build(True))
 
+    def test_the_dialog_builds_in_the_order_shown_and_the_arrows_change_it(self):
+        from nspb_qt.build_queue import QueueRow
+        from nspb_qt.queue_dialog import BuildQueueDialog
+        rows = [QueueRow('A', 'Alpha', 'new', True, True), QueueRow('B', 'Bravo', 'built', False, True),
+                QueueRow('C', 'Charlie', 'new', True, True), QueueRow('R', 'Running', 'running', False, False),
+                QueueRow('D', 'Delta', 'queued', True, True)]
+        dlg = BuildQueueDialog(self.m, rows, adding=True, waiting=['D'])
+        self.addCleanup(dlg.deleteLater)
+        self.assertEqual([r.title_id for r in dlg.rows], ['D', 'A', 'B', 'C', 'R'], 'waiting first, the fixed rows last')
+        self.assertEqual(dlg.chosen, ['D', 'A', 'C'])
+        dlg._move('C', -1)
+        self._settle()
+        self.assertEqual(dlg.chosen, ['D', 'A', 'C'], 'C passed B, which is not ticked')
+        dlg._move('C', -1)
+        self._settle()
+        self.assertEqual(dlg.chosen, ['D', 'C', 'A'])
+        dlg._move('D', -1)   # already first: nothing moves
+        dlg._move('R', 1)    # the game being built does not move
+        self._settle()
+        self.assertEqual([r.title_id for r in dlg.rows], ['D', 'C', 'A', 'B', 'R'])
+        dlg._toggle('B', True)
+        self._settle()
+        self.assertEqual(dlg.chosen, ['D', 'C', 'A', 'B'])
+        self.assertEqual(dlg.start_btn.text(), self.m.t('queue.add', 4))
+
 
 if __name__ == '__main__':
     unittest.main()
