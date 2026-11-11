@@ -470,7 +470,9 @@ class Model(QObject):
             self.update_path = (game.inputs.get('update') or [''])[0]
             self.dlc_paths = list(game.inputs.get('dlc') or [])
             keys = (game.inputs.get('keys') or [''])[0]
-            if keys:
+            # the game's own keys only while that file is there: keys moved since its last build (the player moved
+            # prod.keys up a folder) stopped every queued build with "no such file", while the window's keys were fine
+            if keys and (os.path.isfile(keys) or not self.keys_path or not os.path.isfile(self.keys_path)):
                 self.keys_path = keys
         self.out_dir = game.output_dir or ''
         self.ipa_path = game.ipa_path if game.has_ipa else ''
@@ -2496,6 +2498,11 @@ class Model(QObject):
             update_path='' if folder is not None else (game.inputs.get('update') or [''])[0])
         tid = game.title_id if re.fullmatch(r'[0-9A-Fa-f]{16}', game.title_id or '') else None
         return Model.planned_version(state, tid)
+
+    def needs_mac_for(self, game: lib.LibraryGame) -> bool:
+        """The game's shaders are captured by running it: on Windows its build cannot finish (version_support.needs_mac)."""
+        from . import version_support
+        return pu.IS_WIN and bool(self.repo_path) and version_support.needs_mac(self.engine_path, game.title_id)
 
     def unsupported_version_for(self, game: lib.LibraryGame) -> tuple[str, ...] | None:
         """The versions a library game's profile was brought up on when its files give another one, else None."""

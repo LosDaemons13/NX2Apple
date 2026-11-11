@@ -94,3 +94,13 @@ def annotate_manifest(framework: str | Path, repo: str | Path) -> bool | None:
         except OSError:
             return verdict
     return verdict
+
+
+def needs_mac(repo: str | Path, title_id: str) -> bool:
+    """Whether the game's shaders are captured by running it (its profile has vk_capture.tsv: Super Mario Galaxy 1 and 2,
+    Super Mario Sunshine): the Windows driver cannot do that and stops the build with "this game compiles its shaders at
+    run time ... needs a Mac", after a minute of extraction. Said before the build instead."""
+    tid = title_id.strip().upper()
+    if not repo or not re.fullmatch(r'[0-9A-F]{16}', tid):
+        return False
+    return (Path(repo) / 'dm' / 'games' / tid / 'vk_capture.tsv').is_file()

@@ -45,6 +45,8 @@ class BuildQueueTests(unittest.TestCase):
         q = BuildQueue(waiting=['6'])
         rows = queue_rows(games, running_id='5', queue=q,
                           unsupported=lambda g: ('1.4.1',) if g.title_id == '3' else None)
+        mac = queue_rows([FakeGame('7', 'Galaxy')], needs_mac=lambda g: True)
+        self.assertEqual([(r.status, r.checked, r.enabled) for r in mac], [('mac', False, False)])
         got = {r.name: (r.status, r.checked, r.enabled, r.supported) for r in rows}
         self.assertEqual(got, {
             'New': ('new', True, True, ''),
@@ -104,7 +106,7 @@ class QueueInTheWindowTests(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def _settle(self):
-        for _ in range(5):
+        for _ in range(20):   # rows rebuild one event later (QTimer.singleShot): leave room for it
             self.app.processEvents()
 
     def _finish(self, ok=True):
@@ -155,6 +157,23 @@ class QueueInTheWindowTests(unittest.TestCase):
         self._finish(ok=False)
         self.assertEqual(self.started, ['0100000000010000'], 'nothing more starts after Stop')
         self.assertFalse(self.m.queue.active)
+
+    def test_keys_moved_since_a_games_last_build_do_not_stop_it(self):
+        """The player moved prod.keys; each library game kept the old path, and every queued build stopped with
+        'no such file'. A game's own keys now count only while that file is there."""
+        from nspb_qt import library as lib
+        keys = self.tmp / 'prod.keys'
+        keys.write_text('')
+        base = self.tmp / 'Mario [0100000000010000].nsp'
+        game = lib.LibraryGame(title_id='0100000000010000', name='Mario',
+                               inputs={'base': [str(base)], 'keys': [str(self.tmp / 'moved' / 'prod.keys')]})
+        self.m.keys_path = str(keys)
+        self.m.load_game_from_library(game)
+        self.assertEqual(self.m.keys_path, str(keys))
+        game.inputs['keys'] = [str(keys)]
+        self.m.keys_path = ''
+        self.m.load_game_from_library(game)
+        self.assertEqual(self.m.keys_path, str(keys), 'a game whose keys are there still brings them')
 
     def test_a_build_started_by_hand_is_not_counted_as_queued(self):
         self._wire()

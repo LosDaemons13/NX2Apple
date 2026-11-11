@@ -81,7 +81,7 @@ class BuildQueueDialog(QDialog):
         t = self.m.t
         text = t('queue.statusVersion', row.supported) if row.status == 'version' else t('queue.status.' + row.status)
         est = format_duration(self.estimates.get(row.title_id))
-        return f'{text} · {est}' if est and row.status not in ('running', 'missing') else text
+        return f'{text} · {est}' if est and row.status not in ('running', 'missing', 'mac') else text
 
     def _render(self) -> None:
         """(Re)build the rows: a switch, the game with its place in the queue when ticked, and ▲ / ▼ to move it."""

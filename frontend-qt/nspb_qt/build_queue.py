@@ -65,14 +65,15 @@ class BuildQueue:
 class QueueRow:
     title_id: str
     name: str
-    status: str             # 'running' | 'queued' | 'missing' | 'version' | 'built' | 'new'
+    status: str             # 'running' | 'queued' | 'mac' | 'missing' | 'version' | 'built' | 'new'
     checked: bool
     enabled: bool
     supported: str = ''     # for 'version': the versions the profile was brought up on
 
 
 def queue_rows(games: Iterable, *, running_id: str = '', queue: BuildQueue | None = None,
-               unsupported: Callable[[object], tuple[str, ...] | None] = lambda g: None) -> list[QueueRow]:
+               unsupported: Callable[[object], tuple[str, ...] | None] = lambda g: None,
+               needs_mac: Callable[[object], bool] = lambda g: False) -> list[QueueRow]:
     """The dialog's rows: what is ticked at first, and what cannot be ticked.
 
     Ticked: games not built yet, and games already waiting. Not ticked: games already built (built again only on
@@ -87,6 +88,8 @@ def queue_rows(games: Iterable, *, running_id: str = '', queue: BuildQueue | Non
             rows.append(QueueRow(tid, g.name, 'running', False, False))
         elif tid.upper() in waiting:
             rows.append(QueueRow(tid, g.name, 'queued', True, True))
+        elif needs_mac(g):   # its shaders are captured by running it, which only a Mac does
+            rows.append(QueueRow(tid, g.name, 'mac', False, False))
         elif not g.can_rebuild:   # its base game file or folder is gone (the keys are the window's when the game has none)
             rows.append(QueueRow(tid, g.name, 'missing', False, False))
         elif (versions := unsupported(g)) is not None:

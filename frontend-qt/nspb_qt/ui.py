@@ -743,6 +743,8 @@ class MainWindow(QMainWindow):
     def _estimate_text(self, game) -> str:
         """'Estimated build time: ≈ 1 h 20 (27,985 shaders)', '' when the game's profile lists no shaders."""
         from . import build_estimate as be
+        if self.m.needs_mac_for(game):
+            return self.m.t('estimate.needsMac')
         seconds = self.m.estimate_for(game)
         if seconds is None:
             return ''
@@ -3096,7 +3098,7 @@ class MainWindow(QMainWindow):
         q = self.m.queue
         running_id = (q.current or self.m.build_key) if self.m.running else ''
         rows = queue_rows(self.m.library.games, running_id=running_id or '', queue=q,
-                          unsupported=self.m.unsupported_version_for)
+                          unsupported=self.m.unsupported_version_for, needs_mac=self.m.needs_mac_for)
         estimates = {g.title_id: self.m.estimate_for(g) for g in self.m.library.games}
         dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, waiting=list(q.waiting), estimates=estimates, parent=self)
         if not dlg.exec() or not dlg.chosen:

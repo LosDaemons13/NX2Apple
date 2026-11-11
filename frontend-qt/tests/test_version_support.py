@@ -74,6 +74,12 @@ class VersionSupportTests(unittest.TestCase):
         self.assertIs(vs.annotate_manifest(good, self.engine), True)
         self.assertIs(json.loads((good / 'game.manifest.json').read_text(encoding='utf-8'))['version_supported'], True)
 
+    def test_a_game_whose_shaders_are_captured_by_running_it_needs_a_mac(self) -> None:
+        self.assertFalse(vs.needs_mac(self.engine, TID))
+        (self.engine / 'dm' / 'games' / TID / 'vk_capture.tsv').write_text('# run-time capture list\n')
+        self.assertTrue(vs.needs_mac(self.engine, TID))
+        self.assertFalse(vs.needs_mac('', TID))
+
     def test_annotate_drops_an_old_verdict_when_the_profile_registers_nothing(self) -> None:
         fw = self._framework('v0', version_supported=False, supported_versions=['1.4.1'])
         (self.engine / 'dm' / 'games' / TID / 'game.tsv').write_text(f'title_id\t{TID}\n', encoding='utf-8')
