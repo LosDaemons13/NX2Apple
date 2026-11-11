@@ -209,6 +209,13 @@ def patch(mod: ModuleType, repo: Path, *, j: int | None = None) -> None:
     if _UPSTREAM_RUN is None:
         _UPSTREAM_RUN = mod.run
 
+    # A progress line every second instead of every 30 (BEAT): the window replaces the stage's line in place
+    # (Model.log_beat), so the log stays one line per step while the count and the ETA move each second.
+    try:
+        mod.BEAT = max(1.0, float(os.environ.get('NSPB_PROGRESS_BEAT') or 1))
+    except ValueError:
+        mod.BEAT = 1.0
+
     # ---------------------------------------------------------------- prereqs
     def check_prereqs(env, xlate, mac=False, *a, **kw):
         if mac:

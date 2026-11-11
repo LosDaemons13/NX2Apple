@@ -74,6 +74,15 @@ class Stage:
 
 
 _STAGE_LINE_RE = re.compile(r'^(?:([✓✗⚠])\s*)?\[(\d+)/(\d+)\]\s+(.+)$')
+#: The end of a progress beat: the elapsed time, then the ETA when the work can be counted ("0:31 · ETA 0:08").
+_BEAT_TAIL_RE = re.compile(r'\d+:\d\d(?::\d\d)?(?: · ETA \d+:\d\d(?::\d\d)?)?$')
+
+
+def _is_progress_beat(body: str) -> bool:
+    """A stage's periodic progress line ("[4/7] shader split · splitting: 80%, 63/79 files, 0:31 · ETA 0:08"), not its
+    start ("… "), its end (✓ ✗ ⚠) or a step's start: those stay in the log as lines of their own."""
+    return (bool(_STAGE_LINE_RE.match(body)) and not re.search('[✓✗⚠]', body) and not body.endswith('…')
+            and ': ' in body and bool(_BEAT_TAIL_RE.search(body)))
 _PSO_BASES_CACHE: tuple[tuple[str, int, float], int] | None = None
 _PSO_BASES_LOCK = threading.Lock()
 _PSO_LOG_BATCH_RE = re.compile(r'pso_offline: \S+: batch (\d+)/(\d+): (ready|\d+ bases)')
@@ -223,6 +232,8 @@ class Model(QObject):
     depsChanged = Signal()
     stagesChanged = Signal()
     logAppended = Signal(str)
+    #: A progress line that replaces the stage's previous one in the window (log_beat).
+    logBeat = Signal(str)
     repoChanged = Signal()
     runningChanged = Signal(bool)
     finished = Signal(bool, str)          # ok, note
@@ -2218,6 +2229,40 @@ class Model(QObject):
         """Main-thread half of log(): see log() for why the hop exists."""
         self.logAppended.emit(s)
 
+    @Slot(str)
+    def _emit_beat(self, s: str) -> None:
+        self.logBeat.emit(s)
+
+    #: How often a stage's progress line reaches the log file: the window shows each second's, the file one in 30.
+    BEAT_FILE_SECONDS = 30.0
+
+    def log_beat(self, s: str) -> None:
+        """A progress line ("[4/7] shader split · splitting: 80%, 63/79 files, 0:31 · ETA 0:08"), now one a second.
+
+        The window replaces the stage's last progress line with it (logBeat), so the count and the ETA move each second
+        without a line a second piling up in a build of hours; the log file gets one every BEAT_FILE_SECONDS, as before.
+        """
+        try:
+            if QThread.currentThread() is self.thread():
+                self.logBeat.emit(s)
+            else:
+                QMetaObject.invokeMethod(self, '_emit_beat', Qt.QueuedConnection, Q_ARG(str, s))
+        except RuntimeError:
+            return
+        key = re.match(r'^(?:\[\d\d:\d\d:\d\d\]\s*)?(\[\d+/\d+\])', s)
+        now = time.monotonic()
+        last = getattr(self, '_beat_written', {})
+        stage = key.group(1) if key else ''
+        if now - last.get(stage, -1e9) < self.BEAT_FILE_SECONDS:
+            return
+        self._beat_written = {stage: now}
+        if getattr(self, 'log_path', None):
+            try:
+                with open(self.log_path, 'a', encoding='utf-8', errors='replace') as f:
+                    f.write(s)
+            except OSError:
+                self.log_path = None
+
     def log(self, s: str) -> None:
         """Append to the window's log and to the log file.
 
@@ -2807,9 +2852,12 @@ class Model(QObject):
     def _on_line(self, line: str) -> None:
         """Feed one line of the build's output: stage lines move the stage list, everything
         else goes to the log (which is what the window shows)."""
-        self.log(line + '\n')
-        self.log_tail = (self.log_tail + line + '\n')[-12000:]   # what the classifier reads on a failure
         body = re.sub(r'^\[\d\d:\d\d:\d\d\]\s*', '', line).strip()
+        if _is_progress_beat(body):
+            self.log_beat(line + '\n')   # each second: replaces the stage's previous one in the window
+        else:
+            self.log(line + '\n')
+            self.log_tail = (self.log_tail + line + '\n')[-12000:]   # what the classifier reads on a failure
         # The last line that was not stage bookkeeping: a failed build's summary used to be the
         # bare exit code ("Build failed (exit code 1)"), which told the reporter nothing and sent
         # them looking for a log that a short window had below the fold (issue #52)

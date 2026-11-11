@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
         self.m.stagesChanged.connect(self._refresh_stages)
         self.m.runningChanged.connect(self._refresh_running)
         self.m.logAppended.connect(self._append_log)
+        self.m.logBeat.connect(self._replace_beat)
         self.m.finished.connect(self._on_finished)
         self.m.appUpdateFound.connect(self._on_app_update)
         self.m.appRelaunching.connect(QApplication.quit)
@@ -2734,6 +2736,26 @@ class MainWindow(QMainWindow):
         self.build_btn.style().unpolish(self.build_btn)
         self.build_btn.style().polish(self.build_btn)
         self._refresh_activity_bar()
+
+    def _replace_beat(self, s: str) -> None:
+        """A progress line, each second: it takes the place of the stage's previous one when nothing came in between."""
+        doc = self.log.document()
+        c = self.log.textCursor()
+        stage = re.match(r'^(?:\[\d\d:\d\d:\d\d\]\s*)?(\[\d+/\d+\])', s)
+        stage_key = stage.group(1) if stage else ''
+        last = getattr(self, '_beat_mark', None)   # (stage, characters in the log right after that beat)
+        if last is not None and last[0] == stage_key and last[1] == doc.characterCount():
+            c.movePosition(c.MoveOperation.End)
+            c.movePosition(c.MoveOperation.PreviousBlock)
+            c.movePosition(c.MoveOperation.StartOfBlock)
+            c.movePosition(c.MoveOperation.End, c.MoveMode.KeepAnchor)
+            c.insertText(s)
+        else:
+            c.movePosition(c.MoveOperation.End)
+            c.insertText(s)
+        self._beat_mark = (stage_key, doc.characterCount())
+        self.log.setTextCursor(c)
+        self.log.ensureCursorVisible()
 
     def _append_log(self, s: str) -> None:
         c = self.log.textCursor()
