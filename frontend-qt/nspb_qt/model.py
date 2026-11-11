@@ -17,6 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Q_ARG, QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 from . import app_update
+from .build_queue import BuildQueue
 from . import build_failure as bf
 from . import engine
 from . import input_staging
@@ -280,6 +281,8 @@ class Model(QObject):
         self.repo_behind: int | None = None
         self.repo_status = ''
         self.app_update: app_update.Release | None = None
+        # games to build one after the other (build_queue.py); the window starts each when the one before ends
+        self.queue = BuildQueue()
         self.app_update_busy = False
         self.app_update_progress: float | None = None
         self.app_update_status = ''
@@ -2400,6 +2403,33 @@ class Model(QObject):
             return tid_hex, None
         return tid_hex, 0
 
+    def planned_version_for(self, game: lib.LibraryGame) -> tuple[str, int | None] | None:
+        """planned_version for a library game's inputs, without loading them into the window (the queue dialog)."""
+        import types
+        base = (game.inputs.get('base') or [''])[0]
+        if not base:
+            return None
+        folder = None
+        if inputs.is_game_folder_candidate(base):
+            res = lib.GameFolder.scan(base)
+            if not isinstance(res, lib.GameFolderContents):
+                return None
+            folder = res
+        state = types.SimpleNamespace(
+            game_folder=folder, base_path='' if folder is not None else base,
+            update_path='' if folder is not None else (game.inputs.get('update') or [''])[0])
+        tid = game.title_id if re.fullmatch(r'[0-9A-Fa-f]{16}', game.title_id or '') else None
+        return Model.planned_version(state, tid)
+
+    def unsupported_version_for(self, game: lib.LibraryGame) -> tuple[str, ...] | None:
+        """The versions a library game's profile was brought up on when its files give another one, else None."""
+        from . import version_support
+        planned = self.planned_version_for(game)
+        if planned is None or not self.repo_path:
+            return None
+        mismatch = version_support.check(self.engine_path, planned[0], planned[1])
+        return mismatch.supported if mismatch else None
+
     def unsupported_version(self, title_id: str | None = None):
         """The version_support.Mismatch of the next build, None when it fits or nothing is known."""
         from . import version_support
@@ -2486,7 +2516,14 @@ class Model(QObject):
             # files from different folders or a shared ROMs folder: a stable folder of links per game, so the script sees
             # one game and its fingerprints match on the next build (#58, #132)
             staging = input_staging.folder(work_dir)
-            if input_staging.sync(staged, staging, hard_links=not pu.IS_WIN) == 0:
+            # hard links on Windows too (NTFS has them): a copy took the game's whole size again, and a 14.6 GB
+            # base game that did not fit on a full disk was left out without a word (input_staging.sync)
+            try:
+                staged_count = input_staging.sync(staged, staging, hard_links=True)
+            except input_staging.StagingError as e:
+                self.finished.emit(False, self.t('msg.stagingFailedFile', e.name, e.reason, staging))
+                return
+            if staged_count == 0:
                 self.finished.emit(False, self.t('msg.stagingFailed'))
                 return
             input_dir = staging

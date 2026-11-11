@@ -581,6 +581,14 @@ class MainWindow(QMainWindow):
         chead.addWidget(self.coll_count_lbl)
         chead.addStretch(1)
 
+        self.queue_btn = QPushButton(self.m.t('queue.button'))
+        self.queue_btn.setObjectName('ghost')
+        self.queue_btn.setToolTip(self.m.t('queue.title'))
+        # it gives way before the collection strip does: a narrow window clips its words, not the page's width
+        self.queue_btn.setMinimumWidth(36)
+        self.queue_btn.clicked.connect(self._open_build_queue)
+        chead.addWidget(self.queue_btn)
+
         self.rescan_lib_btn = QPushButton(self.m.t('library.rescan'))
         self.rescan_lib_btn.setObjectName('ghost')
         self.rescan_lib_btn.clicked.connect(self._rescan_library)
@@ -632,6 +640,7 @@ class MainWindow(QMainWindow):
             selected=self._library_filter,
         )
         self.rescan_lib_btn.setText(self.m.t('library.rescan'))
+        self.queue_btn.setText(self.m.t('queue.button'))
 
         if not self.m.library.games:
             self.lib_stack.setCurrentIndex(0)
@@ -2139,7 +2148,7 @@ class MainWindow(QMainWindow):
 
         self.act_stop_btn = QPushButton(self.m.t('btn.stop'))
         self.act_stop_btn.setObjectName('danger')
-        self.act_stop_btn.clicked.connect(self.m.cancel_build)
+        self.act_stop_btn.clicked.connect(self._stop_build)
         self.act_stop_btn.hide()
         row.addWidget(self.act_stop_btn)
 
@@ -2154,7 +2163,10 @@ class MainWindow(QMainWindow):
             done_cnt = sum(1 for s in self.m.stages if s.state == 'done')
             total_cnt = max(7, len(self.m.stages))
             pct = int(min(95, (done_cnt * 100) // total_cnt))
-            self.act_detail.setText(f"{curr_stage.name}: {curr_stage.detail}" if curr_stage else '')
+            detail = f"{curr_stage.name}: {curr_stage.detail}" if curr_stage else ''
+            if self.m.queue.waiting:
+                detail = ' · '.join(x for x in (detail, self.m.t('queue.remaining', len(self.m.queue.waiting))) if x)
+            self.act_detail.setText(detail)
             self.act_progress.setValue(pct)
             self.act_progress.show()
             self.act_view_btn.setText(self.m.t('library.viewBuild'))
@@ -2757,6 +2769,7 @@ class MainWindow(QMainWindow):
 
         if self.m.settings_value('notifyOnComplete', True) and not self.isActiveWindow():
             QApplication.beep()
+        self._queue_after_build(ok)
 
     # ================================================================ Failure Card Actions
 
@@ -2984,7 +2997,7 @@ class MainWindow(QMainWindow):
                        version_confirmed: bool = False) -> None:
         if self.m.running:
             if title_id is None:
-                self.m.cancel_build()
+                self._stop_build()
             return
         if not version_confirmed:
             check = getattr(self.m, 'unsupported_version', None)
@@ -3018,6 +3031,96 @@ class MainWindow(QMainWindow):
         self.reveal_app_btn.hide()
         self.footer.setText('')
         self.m.start_build(title_id=title_id)
+
+    # ================================================================ Build Queue
+
+    def _open_build_queue(self) -> None:
+        """Pick games to build one after the other (build_queue.py); while a build runs, they wait for it."""
+        from .build_queue import queue_rows
+        from .queue_dialog import BuildQueueDialog
+        q = self.m.queue
+        running_id = (q.current or self.m.build_key) if self.m.running else ''
+        rows = queue_rows(self.m.library.games, running_id=running_id or '', queue=q,
+                          unsupported=self.m.unsupported_version_for)
+        dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, parent=self)
+        if not dlg.exec() or not dlg.chosen:
+            return
+        if self.m.running:
+            if q.current is None:
+                q.set([])                 # a build started by hand: the queue begins after it
+            q.waiting = []
+            q.extend(dlg.chosen)
+            self.m.log(self.m.t('queue.added', len(q.waiting)) + '\n')
+            self._refresh_activity_bar()
+            return
+        q.set(dlg.chosen)
+        should = getattr(self.m, 'should_prompt_defender_before_build', None)
+        if callable(should) and should(title_id=None):
+            # asked once for the whole queue: nobody is there at night to answer it for each game
+            choice = self._prompt_defender_before_build(title_id=None)
+            if choice == 'cancel':
+                q.clear()
+                return
+            if choice == 'add':
+                self.footer.setText(self.m.t('defender.msg.waiting'))
+                self.m.apply_defender_exclusions(
+                    title_id=None,
+                    on_done=lambda _ok, cancelled, _msg: q.clear() if cancelled else self._queue_start_next())
+                return
+        self._queue_start_next()
+
+    def _queue_start_next(self) -> None:
+        """Load the next queued game from the library and press Build for it; at the end, say how it went."""
+        q = self.m.queue
+        t = self.m.t
+        while not self.m.running:
+            tid = q.next()
+            if tid is None:
+                if q.results:
+                    self._queue_finished()
+                return
+            game = next((g for g in self.m.library.games if g.title_id.upper() == tid.upper()), None)
+            if game is None or not game.can_rebuild:
+                self.m.log(t('queue.skipped', game.name if game else tid) + '\n')
+                q.finish_current('skipped')
+                continue
+            number, total = q.position()
+            self.m.library.select(game.title_id)
+            self.m.load_game_from_library(game)
+            line = t('queue.starting', game.name, number, total)
+            self.m.log(line + '\n')
+            self.footer.setText(line)
+            self._refresh_library()
+            # the queue dialog showed any version warning; the Defender question was asked for the whole queue
+            self._build_clicked(skip_defender_prompt=True, version_confirmed=True)
+            if q.current == tid and not self.m.running and not getattr(self.m, '_engine_syncing', False):
+                q.finish_current('failed')   # it did not start and nothing said so: go on with the next
+                continue
+            return
+
+    def _queue_after_build(self, ok: bool) -> bool:
+        """After a queued build: record it and start the next one. False for a build that was not queued."""
+        q = self.m.queue
+        if q.current is None:
+            return False
+        q.finish_current('ok' if ok else 'failed')
+        QTimer.singleShot(0, self._queue_start_next)
+        return True
+
+    def _queue_finished(self) -> None:
+        c = self.m.queue.counts()
+        line = self.m.t('queue.done', c['ok'], c['failed'] + c['skipped'])
+        self.m.log(line + '\n')
+        self.footer.setText(line)
+        self._refresh_activity_bar()
+        self._refresh_library()
+
+    def _stop_build(self) -> None:
+        """Stop the running build, and the queue with it."""
+        if self.m.queue.active:
+            self.m.queue.clear()
+            self.m.log(self.m.t('queue.stopped') + '\n')
+        self.m.cancel_build()
 
     # ================================================================ Full-Window Drag & Drop
 

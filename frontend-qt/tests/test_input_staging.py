@@ -53,6 +53,33 @@ class InputStagingTests(unittest.TestCase):
         self.assertEqual(input_staging.sync([base], d), 1)
         self.assertEqual({p.name for p in Path(d).iterdir()}, {'base.nsp', '0100000000000000_build'})
 
+    def test_a_copy_an_earlier_build_left_becomes_a_link_and_gives_its_space_back(self):
+        base = make(self.root / 'a' / 'base.nsp', 100)
+        d = input_staging.folder(self.work)
+        input_staging.sync([base], d, hard_links=False)
+        staged = Path(d) / 'base.nsp'
+        self.assertFalse(os.path.samefile(base, staged), 'a copy first')
+        self.assertEqual(input_staging.sync([base], d, hard_links=True), 1)
+        self.assertTrue(os.path.samefile(base, staged), 'now a hard link to the same file')
+        self.assertEqual(seen(d), [('base.nsp', 4096, os.stat(base).st_mtime_ns)])
+
+    def test_a_file_that_fits_nowhere_says_so_and_leaves_no_partial_copy(self):
+        from unittest import mock
+        base = make(self.root / 'a' / 'Game [01006A800016E000].nsp', 100)
+        d = input_staging.folder(self.work)
+
+        def full_disk(src, dst):
+            Path(dst).write_bytes(b'x' * 100)   # part of it, then the disk is full
+            raise OSError(28, 'No space left on device')
+
+        with mock.patch.object(os, 'link', side_effect=OSError(1, 'links not supported')), \
+                mock.patch.object(input_staging.shutil, 'copy2', side_effect=full_disk), \
+                self.assertRaises(input_staging.StagingError) as ctx:
+            input_staging.sync([base], d)
+        self.assertEqual(ctx.exception.name, 'Game [01006A800016E000].nsp')
+        self.assertIn('No space left', ctx.exception.reason)
+        self.assertEqual(list(Path(d).iterdir()), [], 'no partial copy for the script to find')
+
     def test_extension_is_lowercased_in_the_staged_name(self):   # #554
         S = input_staging
         self.assertEqual(S.staged_name('Game [0100F2C0115B6000].NSP'), 'Game [0100F2C0115B6000].nsp')
