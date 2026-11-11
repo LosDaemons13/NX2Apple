@@ -1592,7 +1592,13 @@ class ParityWindowTests(unittest.TestCase):
             from nspb_qt import platform_util as pu
             from unittest.mock import patch
             self.assertTrue(hasattr(pu, 'reveal') and callable(pu.reveal))
-            with patch('subprocess.Popen') as mock_popen:
+            # On Windows reveal() goes through the shell (SHOpenFolderAndSelectItems via ctypes, then
+            # os.startfile), not only Popen: unmocked, every run opened Explorer on this temp folder,
+            # which then showed "location not available" once the test deleted it.
+            import ctypes
+            with patch('subprocess.Popen') as mock_popen, \
+                    patch.object(ctypes, 'windll', create=True), \
+                    patch.object(pu.os, 'startfile', create=True):
                 self.assertTrue(pu.reveal(str(fake_ipa)))
                 self.assertTrue(pu.reveal(str(fake_romfs)))
                 self.assertFalse(pu.reveal(''))

@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -252,6 +253,184 @@ class AppUpdateTests(unittest.TestCase):
         self.assertIn('v1.2.3', w.update_btn.text())
         self.assertEqual(w.update_btn.styleSheet(), '')
         self.assertEqual(w.update_btn.minimumWidth(), 0)
+
+
+    # ---- download (regression: fetch.download was called without its digest) ----
+
+    def _zip_bytes(self) -> bytes:
+        zip_path = self.tmp / 'served.zip'
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('NX2Apple/NX2Apple.exe', b'MZ-fake-exe')
+            zf.writestr('NX2Apple/_internal/python312.dll', b'fake-dll')
+        data = zip_path.read_bytes()
+        zip_path.unlink()
+        return data
+
+    @staticmethod
+    def _serve(body: bytes):
+        class Resp:
+            headers = {'Content-Length': str(len(body))}
+
+            def __init__(self) -> None:
+                self.left = body
+
+            def read(self, n: int = -1) -> bytes:
+                n = len(self.left) if n is None or n < 0 else n
+                out, self.left = self.left[:n], self.left[n:]
+                return out
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return lambda req, timeout=0: Resp()
+
+    def test_download_release_hands_the_published_sha256_to_the_real_fetch_download(self) -> None:
+        from nspb_qt.win import fetch
+        body = self._zip_bytes()
+        rel = app_update.Release(tag='cartouche-v1.4.0.4',
+                                 url='https://github.com/o/r/releases/download/t/NX2Apple-windows-x64.zip',
+                                 digest='sha256:' + hashlib.sha256(body).hexdigest().upper())
+        seen: list[int] = []
+        with mock.patch('urllib.request.urlopen', self._serve(body)), \
+                mock.patch.object(fetch, 'rank_by_speed', lambda u, log, **k: u):
+            out = app_update.download_release(rel, self.tmp / 'update.zip',
+                                              progress=lambda done, total: seen.append(done))
+        self.assertEqual(out.read_bytes(), body)
+        self.assertEqual(seen[-1], len(body))
+
+    def test_download_release_refuses_bytes_that_do_not_match_the_digest(self) -> None:
+        from nspb_qt.win import fetch
+        rel = app_update.Release(tag='v1.4.1', url='https://github.com/o/r/releases/download/t/x.zip',
+                                 digest='sha256:' + '0' * 64)
+        with mock.patch('urllib.request.urlopen', self._serve(b'not the release')), \
+                mock.patch.object(fetch, 'rank_by_speed', lambda u, log, **k: u), \
+                self.assertRaises(fetch.DownloadError):
+            app_update.download_release(rel, self.tmp / 'update.zip')
+        self.assertFalse((self.tmp / 'update.zip').exists())
+
+    def test_download_release_without_sha256_asks_for_a_manual_update(self) -> None:
+        called = []
+        for digest in (None, '', 'md5:abc', 'sha256:xyz'):
+            rel = app_update.Release(tag='v1.4.1', url='https://example.invalid/x.zip', digest=digest)
+            with self.assertRaises(app_update.StageError) as ctx:
+                app_update.download_release(rel, self.tmp / 'x.zip', download=lambda *a, **k: called.append(a))
+            self.assertEqual(ctx.exception.key, 'app.noDigest')
+        self.assertEqual(called, [])
+
+    def test_display_tag_drops_the_fork_prefix_only(self) -> None:
+        self.assertEqual(app_update.display_tag('cartouche-v1.4.0.3'), 'v1.4.0.3')
+        self.assertEqual(app_update.display_tag('v1.4.0'), 'v1.4.0')
+        self.assertEqual(app_update.display_tag('v1.4.0-rc2'), 'v1.4.0-rc2')
+        self.assertEqual(app_update.display_tag('1.2.3'), '1.2.3')
+        self.assertEqual(app_update.display_tag('nightly'), 'nightly')
+
+    def _qt(self):
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        try:
+            from PySide6.QtCore import QEvent
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            self.skipTest('PySide6 is not installed')
+        return QApplication.instance() or QApplication([]), QEvent
+
+    def test_perform_app_update_downloads_verifies_and_relaunches(self) -> None:
+        """The whole Windows self-update path, with only the network and the relaunch faked."""
+        app, QEvent = self._qt()
+        from nspb_qt import model as model_mod
+        from nspb_qt.win import fetch
+
+        m = model_mod.Model()
+        self.addCleanup(m.deleteLater)
+        body = self._zip_bytes()
+        m.app_update = app_update.Release(
+            tag='cartouche-v1.4.0.4',
+            url='https://github.com/o/r/releases/download/t/NX2Apple-windows-x64.zip',
+            digest='sha256:' + hashlib.sha256(body).hexdigest())
+
+        class SyncThread:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        relaunched = []
+        with mock.patch.object(model_mod.pu, 'IS_WIN', True), \
+                mock.patch.object(model_mod.sys, 'frozen', True, create=True), \
+                mock.patch.object(model_mod.threading, 'Thread', SyncThread), \
+                mock.patch.object(app_update, 'fresh_staging_root',
+                                  lambda base=None: Path(tempfile.mkdtemp(dir=self.tmp))), \
+                mock.patch.object(app_update, 'relaunch_windows_update',
+                                  lambda staged, **k: relaunched.append(staged) or True), \
+                mock.patch('urllib.request.urlopen', self._serve(body)), \
+                mock.patch.object(fetch, 'rank_by_speed', lambda u, log, **k: u):
+            m.perform_app_update()
+        self.assertEqual(m.app_update_status, m.t('app.relaunching', 'cartouche-v1.4.0.4'))
+        self.assertEqual(len(relaunched), 1)
+        self.assertTrue((relaunched[0].app_dir / 'NX2Apple.exe').is_file())
+        self.assertFalse(m.app_update_busy)
+
+    def test_top_bar_tabs_never_sit_on_the_buttons_when_an_update_is_offered(self) -> None:
+        app, QEvent = self._qt()
+        from nspb_qt.model import Model
+        from nspb_qt.ui import MainWindow
+
+        m = Model()
+        w = MainWindow(m)
+
+        def cleanup() -> None:
+            w.close()
+            w.deleteLater()
+            m.deleteLater()
+            app.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+
+        self.addCleanup(cleanup)
+        m.app_update = app_update.Release(tag='cartouche-v1.4.0.4', url='https://example.invalid/u.zip')
+        w.resize(1350, 1000)
+        w.show()
+        w._on_app_update('cartouche-v1.4.0.4', 'https://example.invalid/r')
+        w._refresh_all()
+        self.assertNotIn('cartouche', w.update_btn.text())
+        self.assertIn('v1.4.0.4', w.update_btn.text())
+        bar = w.top_bar
+        # Font metrics differ between machines (offscreen text is far wider than on Windows), so
+        # sweep widths and check every one where the tabs can fit at all: brand title on the left,
+        # the right-hand buttons with the search field at its narrowest.
+        moved = 0
+        for width in range(1200, 2601, 50):
+            w.resize(width, 1000)
+            for page in ('library', 'settings', 'builds'):
+                w._switch_page(page)
+                for _ in range(4):
+                    app.processEvents()
+                nav = bar.nav_container.geometry()
+                trailing = [x for x in (w.search_input, w.new_build_btn, w.update_btn) if x.isVisible()]
+                slack = w.search_input.width() - bar.SEARCH_MIN if w.search_input.isVisible() else 0
+                room = min(x.geometry().x() for x in trailing) + slack - w.title_label.geometry().right() - 1
+                if room < nav.width():
+                    continue
+                for other in trailing + [w.title_label, w.sub_label]:
+                    if other.isVisible():
+                        self.assertFalse(nav.intersects(other.geometry()),
+                                         f'{width}px {page}: tabs {nav} overlap '
+                                         f'{other.objectName() or other.text()!r} {other.geometry()}')
+                if nav.x() != (bar.width() - nav.width()) // 2:
+                    moved += 1
+        self.assertGreater(moved, 0, 'no width needed the tabs moved: the sweep did not test the overlap')
+        # With room to spare the tabs are centred, as before, and the subtitle is back.
+        m.app_update = None
+        w.update_btn.hide()
+        w.resize(1600, 1000)
+        w._switch_page('settings')
+        for _ in range(4):
+            app.processEvents()
+        nav = bar.nav_container.geometry()
+        self.assertLessEqual(abs(nav.center().x() - bar.width() // 2), 1)
+        self.assertTrue(w.sub_label.isVisible())
 
 
 if __name__ == '__main__':

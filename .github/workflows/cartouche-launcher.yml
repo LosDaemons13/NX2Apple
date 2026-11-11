@@ -319,6 +319,10 @@ jobs:
           2. Build your games (your own dumps and prod.keys). Right-click a game in the library to choose its box art.
           3. Publish to GitHub sends NX2Apple.ipa to your PRIVATE repository. Install it on the iPhone with your signing app.
           4. Copy each game's romfs.img to the app (Files app, Documents/games/<title ID>/).
+
+          Coming from 1.4.0.3 or older: the in-app update cannot install this one (it failed every
+          download). Close NX2Apple, unzip this zip over the folder that holds your NX2Apple folder,
+          and replace the files. Updates after this one install from the app again.
           NOTES
           gh release create "$tag" frontend-qt/NX2Apple-windows-x64.zip \
             --target "$SHA" --title "Cartridge launcher $VERSION" --notes-file notes.md --latest

@@ -1162,15 +1162,19 @@ class Model(QObject):
 
         def work() -> None:
             try:
-                from .win import fetch as wf
                 root = app_update.fresh_staging_root()
                 zip_path = root / 'update.zip'
                 try:
-                    wf.download(
-                        rel.url,
+                    app_update.download_release(
+                        rel,
                         zip_path,
                         progress=on_progress,
+                        log=lambda s: self.log(s + '\n'),
                     )
+                except app_update.StageError as err:
+                    self.app_update_status = self.t(err.key, rel.tag)
+                    self.log(self.app_update_status + '\n')
+                    return
                 except Exception as exc:
                     self.log(f'{exc}\n')
                     self.app_update_status = self.t('app.stageNetFail', rel.tag)

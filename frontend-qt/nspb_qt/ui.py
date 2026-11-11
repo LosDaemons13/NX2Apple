@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -39,7 +40,7 @@ from . import inputs
 from . import library as lib
 from . import platform_util as pu
 from . import style
-from .app_update import APP_VERSION
+from .app_update import APP_VERSION, display_tag
 from .build_notes import TEXT, TITLE, stale_reason
 from .i18n import Lang
 from .model import Dep, DepState, Model
@@ -69,29 +70,100 @@ def _set_dot(d: QLabel, color: str) -> None:
     d.setStyleSheet(f'background: {color}; border-radius: 4px;')
 
 
+#: Narrowest the Settings > Version button gets.
+VER_BTN_MIN = 184
+
+
 class TopBarFrame(QFrame):
     """Custom frameless top bar that keeps the center navigation tabs pinned at the exact horizontal center
     and supports dragging / double-clicking to move or maximize the window."""
+
+    #: Room kept between the nav tabs and the controls on either side of them.
+    NAV_GAP = 12
+    SEARCH_MIN = 108
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.nav_container: QWidget | None = None
         self.search_box: QLineEdit | None = None
+        #: Brand widgets, left to right; the last one (the subtitle) is hidden when the nav needs its room.
+        self.brand: list[QWidget] = []
+        self.brand_spacing = 0
+        #: Controls right of the nav (widgets or layouts), left to right.
+        self.trailing: list = []
         self._drag_offset: QPoint | None = None
 
+    @staticmethod
+    def _width_of(item) -> int:
+        if isinstance(item, QLayout):
+            return item.sizeHint().width()
+        return max(item.minimumWidth(), min(item.maximumWidth(), item.sizeHint().width()))
+
+    def _shown(self, item) -> bool:
+        return isinstance(item, QLayout) or not item.isHidden()
+
     def recenter_nav(self) -> None:
-        if self.search_box is not None:
-            sw = max(108, min(172, self.width() - 845))
-            self.search_box.setFixedWidth(sw)
+        """Centre the nav tabs, but never under the brand or the controls on the right.
+
+        The tabs float above the row layout, so a long update pill ("Mettre à jour vers …") used
+        to slide the right-hand buttons underneath them. Everything here is computed from size
+        hints, not from live positions, so calling it again (it runs on every layout pass) gives
+        the same answer and never feeds back into itself. When centring is not possible the tabs
+        move left; when that is not enough the search field narrows, then the subtitle hides.
+        """
+        search = self.search_box
+        sw = max(self.SEARCH_MIN, min(172, self.width() - 845))
         if self.nav_container is None:
+            if search is not None:
+                search.setFixedWidth(sw)
             return
-        self.nav_container.adjustSize()
-        nw = self.nav_container.width()
-        nh = self.nav_container.height()
-        x = max(0, (self.width() - nw) // 2)
+        nav = self.nav_container
+        nav.adjustSize()
+        nw, nh = nav.width(), nav.height()
+        center = max(0, (self.width() - nw) // 2)
+        x = center
+        lay = self.layout()
+        if lay is not None and self.brand and self.trailing:
+            margins, sp = lay.contentsMargins(), lay.spacing()
+            shown = [it for it in self.trailing if self._shown(it)]
+            # The stretch before them is an empty item: one spacing sits between the brand and the
+            # first control, none on the nav's side.
+            trail_w = sum(sw if it is search else self._width_of(it) for it in shown)
+            trail_w += sp * (len(shown) - 1)
+            right = self.width() - margins.right() - trail_w        # x of the first control
+            brand_w = sum(self._width_of(w) for w in self.brand)
+            brand_w += self.brand_spacing * (len(self.brand) - 1)
+            left = margins.left() + brand_w                         # just past the subtitle
+            deficit = nw + 2 * self.NAV_GAP - (right - left)
+            if deficit > 0 and search is not None and search in shown:
+                cut = min(deficit, sw - self.SEARCH_MIN)
+                sw -= cut
+                right += cut
+                deficit -= cut
+            optional = self.brand[-1]
+            hide_optional = deficit > 0 and len(self.brand) > 1
+            if hide_optional:
+                freed = self._width_of(optional) + self.brand_spacing
+                left -= freed
+                deficit -= freed
+            if optional.isHidden() != hide_optional:
+                optional.setVisible(not hide_optional)
+            # Last resort before overlapping: give up the breathing room around the tabs.
+            gap = self.NAV_GAP if deficit <= 0 else max(0, self.NAV_GAP - (deficit + 1) // 2)
+            x = max(left + gap, min(center, right - gap - nw))
+        if search is not None and (search.minimumWidth() != sw or search.maximumWidth() != sw):
+            search.setFixedWidth(sw)
         y = max(0, (self.height() - nh) // 2)
-        self.nav_container.setGeometry(x, y, nw, nh)
-        self.nav_container.raise_()
+        nav.setGeometry(max(0, x), y, nw, nh)
+        nav.raise_()
+
+    def event(self, e) -> bool:
+        handled = super().event(e)
+        # A trailing button that changes text or shows/hides (the update pill) posts a layout
+        # request here; the tabs must move with it, not only when the window is resized.
+        if e.type() == QEvent.LayoutRequest:
+            self.recenter_nav()
+        return handled
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -278,6 +350,8 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(self.title_label)
         brand_row.addWidget(self.sub_label)
         row.addLayout(brand_row)
+        bar.brand = [self.app_icon_lbl, self.title_label, self.sub_label]
+        bar.brand_spacing = brand_row.spacing()
 
         row.addStretch(1)
 
@@ -348,6 +422,8 @@ class MainWindow(QMainWindow):
         win_ctrl_wrap.addWidget(self.close_win_btn)
 
         row.addLayout(win_ctrl_wrap)
+        bar.trailing = [self.search_input, self.new_build_btn, self.update_btn, win_ctrl_wrap]
+        bar.recenter_nav()
 
         return bar
 
@@ -1978,7 +2054,8 @@ class MainWindow(QMainWindow):
         vcol.addWidget(self.ver_status_lbl)
         rv_lay.addLayout(vcol, 1)
         self.ver_action_btn = QPushButton(self.m.t('repo.update'))
-        self.ver_action_btn.setFixedWidth(184)
+        # A floor, not a fixed width: 'Mettre à jour vers v1.4.0.4' is wider than 184 px and was cut off.
+        self.ver_action_btn.setMinimumWidth(VER_BTN_MIN)
         self.ver_action_btn.clicked.connect(self._on_version_action_clicked)
         rv_lay.addWidget(self.ver_action_btn)
         grp.add_row(r_ver)
@@ -2179,14 +2256,14 @@ class MainWindow(QMainWindow):
         self.ver_status_lbl.setText(self.m.app_update_status or t('app.upToDate'))
         if self.m.app_update is not None:
             _set_dot(self.ver_dot, style.ORANGE)
-            base_label = t('app.updateBtn', self.m.app_update.tag)
+            base_label = t('app.updateBtn', display_tag(self.m.app_update.tag))
             prog = self.m.app_update_progress
             if prog is not None:
-                for btn in (self.update_btn, self.ver_action_btn):
-                    if btn.minimumWidth() == 0:
+                for btn, floor in ((self.update_btn, 0), (self.ver_action_btn, VER_BTN_MIN)):
+                    if btn.minimumWidth() == floor:
                         btn.setText(base_label)
                         btn.setStyleSheet('')
-                        btn.setMinimumWidth(btn.sizeHint().width())
+                        btn.setMinimumWidth(max(floor, btn.sizeHint().width()))
                 clamped = min(max(prog, 0.0), 1.0)
                 pct = int(round(clamped * 100))
                 btn_label = f'{pct}%'
@@ -2210,7 +2287,7 @@ class MainWindow(QMainWindow):
                 self.update_btn.setStyleSheet('')
                 self.ver_action_btn.setStyleSheet('')
                 self.update_btn.setMinimumWidth(0)
-                self.ver_action_btn.setMinimumWidth(0)
+                self.ver_action_btn.setMinimumWidth(VER_BTN_MIN)
             self.ver_action_btn.setText(btn_label)
             self.update_btn.setText(btn_label)
             self.update_btn.setEnabled(not self.m.app_update_busy and not self.m.running)
@@ -2218,7 +2295,7 @@ class MainWindow(QMainWindow):
         else:
             _set_dot(self.ver_dot, style.GREEN)
             self.ver_action_btn.setStyleSheet('')
-            self.ver_action_btn.setMinimumWidth(0)
+            self.ver_action_btn.setMinimumWidth(VER_BTN_MIN)
             self.ver_action_btn.setText(t('repo.update'))
         self.ver_action_btn.setEnabled(not self.m.app_update_busy and not self.m.running)
 
@@ -2777,7 +2854,7 @@ class MainWindow(QMainWindow):
             self.m.check_app_update(silent=False)
 
     def _on_app_update(self, tag: str, url: str) -> None:
-        self.update_btn.setText(self.m.t('app.updateBtn', tag))
+        self.update_btn.setText(self.m.t('app.updateBtn', display_tag(tag)))
         self.update_btn.setToolTip(url)
         try:
             self.update_btn.clicked.disconnect()

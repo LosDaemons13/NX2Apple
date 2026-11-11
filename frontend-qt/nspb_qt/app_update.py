@@ -5,6 +5,7 @@ compare versions, match release assets, and verify SHA-256 digests identically.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -214,6 +215,47 @@ def check_digest(path: Path, expected: str | None) -> str:
     if have is None:
         return 'mismatch'
     return 'match' if have == want else 'mismatch'
+
+
+def release_sha256(release: Release) -> str | None:
+    """The SHA-256 GitHub published for the release zip, as 64 lowercase hex digits, or None."""
+    d = (release.digest or '').strip().lower()
+    if not d.startswith('sha256:'):
+        return None
+    want = d[len('sha256:'):].strip()
+    return want if re.fullmatch(r'[0-9a-f]{64}', want) else None
+
+
+def download_release(
+    release: Release,
+    dest: Path,
+    progress: Callable[[int, int], None] | None = None,
+    log: Callable[[str], None] | None = None,
+    download: Callable[..., Path] | None = None,
+) -> Path:
+    """Fetch the release zip into `dest`, checked against the SHA-256 GitHub publishes for it.
+
+    `fetch.download` only accepts a pinned digest: calling it without one raised a TypeError
+    before a single byte was fetched, and every self-update failed as "GitHub unreachable".
+    A release without a SHA-256 raises StageError('app.noDigest'), whose message says to
+    update by hand.
+    """
+    want = release_sha256(release)
+    if want is None:
+        raise StageError('app.noDigest')
+    if download is None:
+        from .win import fetch
+        download = fetch.download
+    return download(release.url, dest, want, log=log, progress=progress)
+
+
+_TAG_VERSION_RE = re.compile(r'(?:^|[-_/])(v?\d+(?:\.\d+)*(?:-rc\d+)?)$', re.I)
+
+
+def display_tag(tag: str) -> str:
+    """The version part of a release tag for buttons: 'cartouche-v1.4.0.3' -> 'v1.4.0.3'."""
+    m = _TAG_VERSION_RE.search(tag.strip())
+    return m.group(1) if m else tag
 
 
 def fresh_staging_root(base_temp: Path | None = None) -> Path:
