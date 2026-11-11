@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: cartouche-launcher
+  group: cartouche-launcher-v2   # a new name: run 43094477245 was left "in progress" by GitHub and blocked the old group
   cancel-in-progress: true
 
 jobs:
