@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Wed, 11 Nov 2026 20:31:04 +0100
+Subject: [PATCH] docs: DM_SPLIT_SPILL_DIR in the switches table
+
+shader_split.py reads DM_SPLIT_SPILL_DIR since the large pool batches
+come back through a file (patch 0124), and every switch the code reads
+is listed with its class and meaning (test_env_switches.py).
+
+Upstream-Status: pending
+Reason: The switches table names DM_SPLIT_SPILL_DIR, which the shader split's spilled batches read
+Issue: none yet (LosDaemons13/NX2Apple, a Windows build of Pokemon Pokopia)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ docs/env_switches.tsv | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 1d325f0..30d63f5 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -364,6 +364,7 @@ DM_SLOWFRAME	diagnostic	`=1` writes the per-frame timing breakdown to the log on
+ DM_SPIN	switch	`0` makes the rewriter's spin gate return at once, so guest poll loops spin with no sleep; the gate stays (on by default)
+ DM_SPIN_LIST	diagnostic	`=1` makes `patch_nso.py` print every guest poll loop it found and sends through a spin gate
+ DM_SPIN_POLL	switch	`=<µs>`: how long a spin-gate wait polls before it sleeps with the yield back-off (default 2000; `0` yields on every pass)
++DM_SPLIT_SPILL_DIR	path	Folder where `shader_split.py` writes a pool batch whose shader bytes pass 1 GiB, read back and removed as soon as the batch is done: one pipe write above 4 GiB fails on Windows (`WinError 87`, Pokemon Pokopia); the split sets it to its shader map's folder
+ DM_STEAM_DEADZONE	switch	`=0..0.9` (exclusive upper bound) sets the radial deadzone for both raw Steam Controller sticks; default 0.10, `0` disables it; invalid values use the default
+ DM_STEAM_HID	switch	`=0` disables the Mac direct Steam Controller HID adapter and leaves input to Apple GameController; enabled otherwise
+ DM_STICK_DEADZONE_L	switch	`=1..50` sets a radial deadzone of that many percent of the travel for the left stick of every physical controller (inside it the stick reads centred, outside it the rest of the travel is rescaled to the full range); unset, `0` or anything else leaves the stick as the controller reports it. The Mac launcher's Controls settings write it (Use custom deadzones)
