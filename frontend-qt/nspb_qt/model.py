@@ -17,6 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Q_ARG, QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 from . import app_update
+from . import build_estimate
 from .build_queue import BuildQueue
 from . import build_failure as bf
 from . import engine
@@ -2448,6 +2449,36 @@ class Model(QObject):
             return tid_hex, None
         return tid_hex, 0
 
+    # ---- build time estimates (build_estimate.py)
+
+    @property
+    def sec_per_shader(self) -> float:
+        try:
+            raw = self.settings.value(build_estimate.SETTINGS_KEY, defaultValue='', type=str)
+            v = float(raw) if raw else build_estimate.DEFAULT_SEC_PER_SHADER
+        except (TypeError, ValueError):
+            v = build_estimate.DEFAULT_SEC_PER_SHADER
+        return v if 0.005 < v < 30 else build_estimate.DEFAULT_SEC_PER_SHADER
+
+    def estimate_for(self, game: lib.LibraryGame) -> int | None:
+        """Seconds a build of `game` should take on this PC, None when its profile lists no shaders."""
+        return build_estimate.estimate_seconds(self.engine_path, game, self.sec_per_shader)
+
+    def _learn_build_rate(self) -> None:
+        """After a successful full build (no compiled shaders to reuse), fold its time per shader into the rate."""
+        clock = getattr(self, '_build_clock', None)
+        self._build_clock = None
+        if not clock:
+            return
+        started, shaders, rebuilt = clock
+        if rebuilt or not shaders:
+            return
+        rate = build_estimate.rate_after(self.sec_per_shader, time.monotonic() - started, shaders)
+        try:
+            self.settings.setValue(build_estimate.SETTINGS_KEY, f'{rate:.4f}')
+        except Exception:
+            pass
+
     def planned_version_for(self, game: lib.LibraryGame) -> tuple[str, int | None] | None:
         """planned_version for a library game's inputs, without loading them into the window (the queue dialog)."""
         import types
@@ -2651,6 +2682,13 @@ class Model(QObject):
             )
             self._emit_library_changed()
 
+        # timed for the estimates (build_estimate.py): a full build teaches this PC's time per shader
+        try:
+            shader_dir = Path(work_dir, 'shader')
+            rebuilt = shader_dir.is_dir() and any(shader_dir.iterdir())
+        except OSError:
+            rebuilt = True
+        self._build_clock = (time.monotonic(), build_estimate.shader_count(self.engine_path, tid_hex), rebuilt)
         self.running = True
         self.runningChanged.emit(True)
         self._stop_pso_poll()
@@ -2751,6 +2789,8 @@ class Model(QObject):
             finally:
                 self.running = False
                 self.runningChanged.emit(False)
+            if ok:
+                self._learn_build_rate()
             self.finished.emit(ok, note)
 
         self._thread = threading.Thread(target=work, daemon=True)

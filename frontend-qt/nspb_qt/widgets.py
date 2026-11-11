@@ -368,6 +368,11 @@ class HeroBannerWidget(QWidget):
         self.sub_lbl.setObjectName('mono')
         self.sub_lbl.setStyleSheet('font-size: 12px; color: rgba(255,255,255,0.58);')
         lay.addWidget(self.sub_lbl)
+        # How long a build of this game should take on this PC (build_estimate.py)
+        self.estimate_lbl = QLabel('')
+        self.estimate_lbl.setStyleSheet('font-size: 12.5px; color: rgba(255,255,255,0.72);')
+        self.estimate_lbl.hide()
+        lay.addWidget(self.estimate_lbl)
         lay.addSpacing(6)
 
         # Action bar: primary capsule CTA + Manage button
@@ -404,11 +409,14 @@ class HeroBannerWidget(QWidget):
         image_path: str | None,
         is_switch2: bool = False,
         switch2_label: str = 'Switch 2',
+        estimate: str = '',
     ) -> None:
         self._title_id = title_id
         self._title_text = title
         self.title_lbl.setText(title)
         self.sub_lbl.setText(subtitle)
+        self.estimate_lbl.setText(estimate)
+        self.estimate_lbl.setVisible(bool(estimate))
         self.status_lbl.setText(status_text.upper())
         self.dot.set_color(status_color)
         self.primary_btn.setText(primary_label)

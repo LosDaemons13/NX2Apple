@@ -693,6 +693,7 @@ class MainWindow(QMainWindow):
                 image_path=art,
                 is_switch2=sel.is_switch2(self.m.engine_path),
                 switch2_label=self.m.t('switch2.badge'),
+                estimate=self._estimate_text(sel),
             )
 
         # Rebuild horizontal strip
@@ -738,6 +739,17 @@ class MainWindow(QMainWindow):
         self._ensure_selected_card_visible = True
         self.m.library.select(title_id)
         self._refresh_library()
+
+    def _estimate_text(self, game) -> str:
+        """'Estimated build time: ≈ 1 h 20 (27,985 shaders)', '' when the game's profile lists no shaders."""
+        from . import build_estimate as be
+        seconds = self.m.estimate_for(game)
+        if seconds is None:
+            return ''
+        if be.has_compiled_shaders(game):
+            return self.m.t('estimate.rebuild', be.format_duration(seconds))
+        n = be.shader_count(self.m.engine_path, game.title_id) or 0
+        return self.m.t('estimate.build', be.format_duration(seconds), f'{n:,}'.replace(',', '\u202f'))
 
     def _on_card_double_clicked(self, title_id: str) -> None:
         self.m.library.select(title_id)
@@ -3085,7 +3097,8 @@ class MainWindow(QMainWindow):
         running_id = (q.current or self.m.build_key) if self.m.running else ''
         rows = queue_rows(self.m.library.games, running_id=running_id or '', queue=q,
                           unsupported=self.m.unsupported_version_for)
-        dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, waiting=list(q.waiting), parent=self)
+        estimates = {g.title_id: self.m.estimate_for(g) for g in self.m.library.games}
+        dlg = BuildQueueDialog(self.m, rows, adding=self.m.running, waiting=list(q.waiting), estimates=estimates, parent=self)
         if not dlg.exec() or not dlg.chosen:
             return
         if self.m.running:

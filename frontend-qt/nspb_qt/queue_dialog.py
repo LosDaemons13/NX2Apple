@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from . import style
+from .build_estimate import format_duration
 from .build_queue import QueueRow
 from .widgets import CardGroup, LauncherSwitch
 
@@ -26,11 +27,12 @@ def initial_order(rows: list[QueueRow], waiting: list[str] = ()) -> list[QueueRo
 
 class BuildQueueDialog(QDialog):
     def __init__(self, model: 'Model', rows: list[QueueRow], *, adding: bool, waiting: list[str] = (),
-                 parent: QWidget | None = None) -> None:
+                 estimates: dict[str, int | None] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.m = model
         self.rows = initial_order(rows, waiting)
         self.adding = adding
+        self.estimates = estimates or {}
         self.checked: set[str] = {r.title_id for r in self.rows if r.checked and r.enabled}
         t = self.m.t
         self.setWindowTitle(t('queue.title'))
@@ -55,6 +57,9 @@ class BuildQueueDialog(QDialog):
         lay.addWidget(self.scroll, 1)
 
         foot = QHBoxLayout()
+        self.total_lbl = QLabel('')
+        self.total_lbl.setObjectName('muted')
+        foot.addWidget(self.total_lbl)
         foot.addStretch(1)
         cancel = QPushButton(t('queue.cancel'))
         cancel.setObjectName('ghost')
@@ -74,9 +79,9 @@ class BuildQueueDialog(QDialog):
 
     def _status_text(self, row: QueueRow) -> str:
         t = self.m.t
-        if row.status == 'version':
-            return t('queue.statusVersion', row.supported)
-        return t('queue.status.' + row.status)
+        text = t('queue.statusVersion', row.supported) if row.status == 'version' else t('queue.status.' + row.status)
+        est = format_duration(self.estimates.get(row.title_id))
+        return f'{text} · {est}' if est and row.status not in ('running', 'missing') else text
 
     def _render(self) -> None:
         """(Re)build the rows: a switch, the game with its place in the queue when ticked, and ▲ / ▼ to move it."""
@@ -121,6 +126,9 @@ class BuildQueueDialog(QDialog):
         self.scroll.setWidget(group)
         self.scroll.verticalScrollBar().setValue(keep)
         n = len(self.checked)
+        known = [self.estimates.get(tid) for tid in self.checked]
+        total = sum(e for e in known if e)
+        self.total_lbl.setText(self.m.t('queue.total', format_duration(total)) if total else '')
         self.start_btn.setText(self.m.t('queue.add' if self.adding else 'queue.start', n))
         self.start_btn.setEnabled(n > 0)
 
