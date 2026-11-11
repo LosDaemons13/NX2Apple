@@ -24,6 +24,13 @@ public enum PCAddress {
         guard let url = URL(string: s), let host = url.host, !host.isEmpty else { return nil }
         return url
     }
+
+    /// The share's address in a pasted text, which may be a whole message ("Adresse : 192.168.1.20:8765/abc234"): the
+    /// first word that names a port, else the text itself.
+    public static func find(in text: String) -> String {
+        let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        return words.first { base(from: $0)?.port != nil } ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 public struct PCFile: Decodable, Equatable, Sendable {
@@ -192,6 +199,12 @@ public enum PCTransferError: Error, Equatable, LocalizedError {
     public func connect() {
         task?.cancel()
         task = Task { await connectNow() }
+    }
+
+    /// The screen's Paste button: the address in the pasted text replaces what was typed, and the screen connects to it.
+    public func paste(_ text: String) {
+        address = PCAddress.find(in: text)
+        connect()
     }
 
     func connectNow() async {

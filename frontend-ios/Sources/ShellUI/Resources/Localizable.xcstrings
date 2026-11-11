@@ -9537,6 +9537,134 @@
         }
       }
     },
+    "Made by an older NX2Apple. On the PC, update NX2Apple, use Make the IPA again in Send to iPhone (Wi-Fi), then install the new IPA with FlareStore.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Von einer älteren NX2Apple-Version erstellt. Aktualisiere NX2Apple auf dem PC, nutze IPA neu erstellen unter An iPhone senden (WLAN) und installiere dann die neue IPA mit FlareStore."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Made by an older NX2Apple. On the PC, update NX2Apple, use Make the IPA again in Send to iPhone (Wi-Fi), then install the new IPA with FlareStore."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creada por una versión anterior de NX2Apple. En el PC, actualiza NX2Apple, usa Volver a crear la IPA en Enviar al iPhone (Wi-Fi) e instala la nueva IPA con FlareStore."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Créée par une ancienne version de NX2Apple. Sur le PC, mettez NX2Apple à jour, utilisez Recréer l’IPA dans Envoyer à l’iPhone (Wi-Fi), puis installez la nouvelle IPA avec FlareStore."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creata da una versione precedente di NX2Apple. Sul PC, aggiorna NX2Apple, usa Ricrea l’IPA in Invia all’iPhone (Wi-Fi), poi installa la nuova IPA con FlareStore."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "古い NX2Apple で作成されています。PC で NX2Apple をアップデートし、「iPhone に送信（Wi-Fi）」の「IPA を作り直す」を使ってから、新しい IPA を FlareStore でインストールしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이전 버전의 NX2Apple로 만들었습니다. PC에서 NX2Apple을 업데이트하고 iPhone으로 보내기(Wi-Fi)에서 IPA 다시 만들기를 사용한 다음, 새 IPA를 FlareStore로 설치하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Criada por uma versão anterior do NX2Apple. No PC, atualize o NX2Apple, use Criar a IPA de novo em Enviar ao iPhone (Wi-Fi) e instale a nova IPA com o FlareStore."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skapad av en äldre NX2Apple. Uppdatera NX2Apple på datorn, använd Skapa IPA:n igen i Skicka till iPhone (Wi-Fi) och installera sedan den nya IPA:n med FlareStore."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由旧版 NX2Apple 生成。请在电脑上更新 NX2Apple，在“发送到 iPhone（Wi-Fi）”中使用“重新生成 IPA”，然后用 FlareStore 安装新的 IPA。"
+          }
+        }
+      }
+    },
+    "Made on %@ by NX2Apple on the PC. Its Send to iPhone (Wi-Fi) window shows the version of the app it offers.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Am %@ von NX2Apple auf dem PC erstellt. Sein Fenster An iPhone senden (WLAN) zeigt die Version der App, die es anbietet."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Made on %@ by NX2Apple on the PC. Its Send to iPhone (Wi-Fi) window shows the version of the app it offers."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creada el %@ por NX2Apple en el PC. Su ventana Enviar al iPhone (Wi-Fi) muestra la versión de la app que ofrece."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Créée le %@ par NX2Apple sur le PC. Sa fenêtre Envoyer à l’iPhone (Wi-Fi) affiche la version de l’app qu’il propose."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creata il %@ da NX2Apple sul PC. La sua finestra Invia all’iPhone (Wi-Fi) mostra la versione dell’app che offre."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ に PC の NX2Apple で作成。PC の「iPhone に送信（Wi-Fi）」ウインドウに、提供中のアプリのバージョンが表示されます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에 PC의 NX2Apple에서 만들었습니다. PC의 iPhone으로 보내기(Wi-Fi) 창에 제공 중인 앱의 버전이 표시됩니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Criada em %@ pelo NX2Apple no PC. A janela Enviar ao iPhone (Wi-Fi) dele mostra a versão do app que oferece."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skapad %@ av NX2Apple på datorn. Dess fönster Skicka till iPhone (Wi-Fi) visar versionen av appen det erbjuder."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由电脑上的 NX2Apple 于 %@ 生成。电脑上的“发送到 iPhone（Wi-Fi）”窗口会显示其提供的 App 版本。"
+          }
+        }
+      }
+    },
     "Manual": {
       "localizations": {
         "de": {
@@ -11389,6 +11517,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未游玩"
+          }
+        }
+      }
+    },
+    "Not recorded": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht vermerkt"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not recorded"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin registrar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non indiquée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non indicata"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "記録なし"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기록 없음"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não registrada"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inte angiven"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未记录"
           }
         }
       }

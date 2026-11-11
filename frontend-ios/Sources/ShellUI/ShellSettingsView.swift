@@ -48,6 +48,7 @@ enum ShellSettingsRows {
 struct ShellSettingsView: View {
     @Environment(\.shellNativeBars) private var nativeBars
     var store: ShellSettingsStore = .current
+    var appVersion: ShellAppVersion = .current
     var actions: ShellActions
     var onClose: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -138,6 +139,23 @@ struct ShellSettingsView: View {
                     Text(ShellStrings.text("Interface"))
                 } footer: {
                     Text(ShellStrings.text("Used by games that have no choice of their own."))
+                }
+
+                Section {
+                    LabeledContent {
+                        Text(verbatim: appVersion.version ?? ShellStrings.text("Not recorded"))
+                            .monospacedDigit()
+                    } label: {
+                        Label(ShellStrings.text("Version"), systemImage: "info.circle")
+                            .labelStyle(SettingsRowLabelStyle())
+                    }
+                    .accessibilityIdentifier("shellSettings.version")
+                } footer: {
+                    if let made = appVersion.made {
+                        Text(ShellStrings.text("Made on \(made.formatted(date: .abbreviated, time: .shortened)) by NX2Apple on the PC. Its Send to iPhone (Wi-Fi) window shows the version of the app it offers."))
+                    } else if appVersion.version == nil {
+                        Text(ShellStrings.text("Made by an older NX2Apple. On the PC, update NX2Apple, use Make the IPA again in Send to iPhone (Wi-Fi), then install the new IPA with FlareStore."))
+                    }
                 }
             }
             .formStyle(.grouped)

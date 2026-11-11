@@ -187,6 +187,23 @@ extension UIResponder {
     }
 }
 
+extension UIView {
+    /// No other screen is presented over the one this view is in: a sheet, "Receive from PC" over the shell settings, an
+    /// alert. A screen on top has its own fields and keys, so the key commands under it leave the keyboard alone.
+    @MainActor var shellIsOnTopScreen: Bool {
+        guard let window, var top = window.rootViewController else { return false }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        return isDescendant(of: top.view)
+    }
+}
+
+/// A screen the host presented over the shell outside SwiftUI ("Receive from PC") closed: the key commands under it take
+/// the keyboard back, which no update of their own views would do.
+public enum ShellKeyboardFocus {
+    static let reclaim = Notification.Name("ShellKeyCommands.reclaim")
+    public static func screenClosed() { NotificationCenter.default.post(name: reclaim, object: nil) }
+}
+
 private struct ShellKeyCommands: UIViewRepresentable {
     let active: Bool
     let handle: (ShellInput.Action) -> Void
@@ -194,8 +211,8 @@ private struct ShellKeyCommands: UIViewRepresentable {
     func updateUIView(_ view: CommandView, context: Context) {
         view.active = active
         view.handle = handle
-        if active, view.window != nil, !view.isFirstResponder, !UIResponder.shellTextIsBeingEdited { view.becomeFirstResponder() }
-        else if !active, view.isFirstResponder { view.resignFirstResponder() }
+        if active { view.takeKeyboard() }
+        else if view.isFirstResponder { view.resignFirstResponder() }
     }
     final class CommandView: UIView {
         var active = false
@@ -205,14 +222,26 @@ private struct ShellKeyCommands: UIViewRepresentable {
             (UIKeyCommand.inputUpArrow, .up), (UIKeyCommand.inputDownArrow, .down),
             ("\r", .activate), (UIKeyCommand.inputEscape, .back), ("o", .settings), ("y", .controllers), (",", .shellSettings)
         ]
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            NotificationCenter.default.addObserver(self, selector: #selector(reclaim(_:)), name: ShellKeyboardFocus.reclaim, object: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
         override var canBecomeFirstResponder: Bool { active }
         override var keyCommands: [UIKeyCommand]? {
             active ? Self.actions.map { UIKeyCommand(input: $0.0, modifierFlags: [], action: #selector(command(_:))) } : nil
         }
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            if active, window != nil, !UIResponder.shellTextIsBeingEdited { becomeFirstResponder() }
+            takeKeyboard()
         }
+        /// Takes the first responder for the key commands, unless a text is being typed anywhere or another screen is on
+        /// top: "Receive from PC" lost its keyboard as soon as it showed it.
+        func takeKeyboard() {
+            guard active, window != nil, !isFirstResponder, shellIsOnTopScreen, !UIResponder.shellTextIsBeingEdited else { return }
+            becomeFirstResponder()
+        }
+        @objc private func reclaim(_ note: Notification) { takeKeyboard() }
         @objc private func command(_ command: UIKeyCommand) {
             guard active, let action = Self.actions.first(where: { $0.0 == command.input })?.1 else { return }
             handle?(action)

@@ -1,4 +1,5 @@
 import SwiftUI
+import ShellUI
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -22,6 +23,14 @@ struct ReceiveFromPCView: View {
                     .submitLabel(.go)
                     .onSubmit { receiver.connect() }
                     .disabled(receiver.phase == .receiving)
+                    // The address copied elsewhere (a message to oneself, the FlareStore link) goes in with one tap and
+                    // connects, keyboard or not. The system's own Paste button: no prompt to allow pasting.
+                    PasteButton(payloadType: String.self) { [receiver = self.receiver] texts in
+                        guard let text = texts.first else { return }
+                        Task { @MainActor in receiver.paste(text) }
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .disabled(receiver.phase == .receiving || receiver.phase == .connecting)
                     Button(hostText("Connect")) { receiver.connect() }
                         .disabled(receiver.phase == .receiving || receiver.phase == .connecting || receiver.address.isEmpty)
                 } footer: {
@@ -111,7 +120,8 @@ private extension View {
     static func present(_ receiver: PCReceiver, onClose: @escaping @MainActor () -> Void) -> UIViewController? {
         guard let top = DocumentFolderPicker.topViewController() else { return nil }
         var host: UIViewController?
-        let view = ReceiveFromPCView(receiver: receiver) { host?.dismiss(animated: true); onClose() }
+        // Closed, the shell under it takes the hardware keyboard's commands back (ShellFocus.swift).
+        let view = ReceiveFromPCView(receiver: receiver) { host?.dismiss(animated: true) { ShellKeyboardFocus.screenClosed() }; onClose() }
         let controller = UIHostingController(rootView: view)
         controller.isModalInPresentation = true   // closed with Done, so a transfer is never dropped by a swipe
         host = controller

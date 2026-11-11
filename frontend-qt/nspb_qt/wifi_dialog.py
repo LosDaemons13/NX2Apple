@@ -27,6 +27,7 @@ class WifiShareDialog(QDialog):
         super().__init__(parent)
         self.m = model
         self.ipa_path = Path(ipa_path)
+        self._ipa_version: str | None = None   # the launcher version that made the IPA, read with its staleness
         t = self.m.t
         self.setWindowTitle(t('wifi.title'))
         self.setMinimumSize(640, 560)
@@ -167,7 +168,9 @@ class WifiShareDialog(QDialog):
             self.ipa_status.setText(t('wifi.noIpa'))
         else:
             st = ipa.stat()
-            self.ipa_status.setText(t('wifi.ipaStatus', _gb(st.st_size), time.strftime('%H:%M', time.localtime(st.st_mtime))))
+            status = t('wifi.ipaStatus', _gb(st.st_size), time.strftime('%H:%M', time.localtime(st.st_mtime)))
+            version = self._ipa_version
+            self.ipa_status.setText(f"{status}\n{t('wifi.ipaVersion', version)}" if version else status)
         games = ws.shared_games(self.m.library.games)
         self.games_label.setText(', '.join(f'{g.name} ({_gb(sum(s for _, s in g.files()))})' for g in games)
                                  if games else t('wifi.noData'))
@@ -180,6 +183,7 @@ class WifiShareDialog(QDialog):
             tpl = se.find_shell_template(self.m.engine_path, root=self.m.shell_cache_path)
             current = se.shell_template_id(tpl) if tpl is not None else None
             self._stale = current is not None and se.ipa_template_id(ipa) != current
+            self._ipa_version = se.ipa_app_version(ipa)
             self._stale_key = key
         return self._stale
 

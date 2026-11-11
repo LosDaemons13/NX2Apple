@@ -39,6 +39,13 @@ final class FakeShare: URLProtocol {
         #expect(PCAddress.base(from: "http://") == nil)
     }
 
+    /// The Paste button takes the address out of a whole message, or the FlareStore link.
+    @Test func aPastedMessageGivesItsAddress() {
+        #expect(PCAddress.find(in: "Adresse : 192.168.1.20:8765/abc234\n") == "192.168.1.20:8765/abc234")
+        #expect(PCAddress.find(in: "http://192.168.1.20:8765/abc234/NX2Apple.ipa") == "http://192.168.1.20:8765/abc234/NX2Apple.ipa")
+        #expect(PCAddress.find(in: "  pc.local/abc234 ") == "pc.local/abc234", "no port anywhere: the text as it is")
+    }
+
     @Test func onlyWhatTheIPhoneLacksIsFetchedAndNothingOutsideTheGamesFolder() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("pcplan-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }

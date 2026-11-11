@@ -148,11 +148,17 @@ class WifiShareTests(unittest.TestCase):
         with zipfile.ZipFile(ipa, 'w') as z:
             z.write(app / 'Info.plist', 'Payload/DmShell.app/Info.plist')
         self.assertEqual(se.ipa_template_id(ipa), se.shell_template_id(app))
+        from nspb_qt import app_update
+        self.assertEqual(se.ipa_app_version(ipa), app_update.APP_VERSION, 'the version the app shows in its settings')
+        with open(app / 'Info.plist', 'rb') as f:
+            self.assertRegex(plistlib.load(f)['DMExportedAt'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
         old = self.tmp / 'old.ipa'
         with zipfile.ZipFile(old, 'w') as z:
             z.writestr('Payload/DmShell.app/Info.plist', plistlib.dumps({'CFBundleIdentifier': 'x'}))
         self.assertIsNone(se.ipa_template_id(old), 'exported before the id was recorded')
+        self.assertIsNone(se.ipa_app_version(old))
         self.assertIsNone(se.ipa_template_id(self.tmp / 'missing.ipa'))
+        self.assertIsNone(se.ipa_app_version(self.tmp / 'missing.ipa'))
 
     def test_addresses_are_local_ipv4(self):
         for a in ws.local_addresses():
