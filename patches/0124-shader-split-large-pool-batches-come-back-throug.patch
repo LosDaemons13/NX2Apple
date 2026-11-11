@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Wed, 11 Nov 2026 19:13:52 +0100
+Subject: [PATCH] shader split: large pool batches come back through a file on
+ Windows
+
+A pool result goes back to the parent in one pipe write, and on Windows
+that write fails above 4 GiB (OSError: [WinError 87], CPython's
+_winapi.WriteFile; a 3.94 GiB result passes, a 4.06 GiB one fails, Python
+3.12). A batch of 16 of Pokemon Pokopia's files carried more shader code
+than that, so its split ended at 79/79 with nothing written.
+
+scan_batch now pickles a batch whose shader bytes pass SPILL_BYTES (1 GiB)
+to a file beside the shader map (DM_SPLIT_SPILL_DIR), and pooled reads it
+back and removes it as soon as that batch is done. Smaller batches go
+through the pipe as before. The deferred Unity pass goes through the same
+path. Checked on Pokopia 2.0.1's files on Windows: the split that failed
+now gets past every file.
+
+Upstream-Status: pending
+Reason: Windows builds of games with more than 4 GiB of shader code in one batch (Pokemon Pokopia) failed in the shader split
+Issue: none yet (LosDaemons13/NX2Apple, a Windows build of Pokemon Pokopia)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ dm/gfx/tests/test_split_spill.py | 71 ++++++++++++++++++++++++++++++++
+ dm/gfx/tools/shader_split.py     | 41 ++++++++++++++++--
+ 2 files changed, 108 insertions(+), 4 deletions(-)
+ create mode 100644 dm/gfx/tests/test_split_spill.py
+
+diff --git a/dm/gfx/tests/test_split_spill.py b/dm/gfx/tests/test_split_spill.py
+new file mode 100644
+index 0000000..aae1805
+--- /dev/null
++++ b/dm/gfx/tests/test_split_spill.py
+@@ -0,0 +1,71 @@
++"""A pool batch with more shader bytes than SPILL_BYTES comes back to the parent through a file, not the pipe.
++
++On Windows one pipe write above 4 GiB fails (OSError: [WinError 87], CPython's _winapi.WriteFile): a batch of 16 of Pokémon
++Pokopia's files carried more shader code than that, and the split ended with nothing written. Without game data: scan_file is
++replaced by results of chosen sizes, and SPILL_BYTES is made small.
++"""
++from pathlib import Path
++import concurrent.futures as cf
++import os
++import sys
++import tempfile
++import unittest
++from unittest import mock
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
++import shader_split
++
++
++def result(rel, code_bytes):
++    """A scan_file result: (relative path, {key: (where, stage, control, code)}, pairs, extra)."""
++    uniq = {f'{rel}-k': (f'/{rel}', 'fragment', b'C' * 16, b'X' * code_bytes)} if code_bytes else {}
++    return rel, uniq, set(), {}
++
++
++class SpillTests(unittest.TestCase):
++    def setUp(self):
++        self.td = tempfile.TemporaryDirectory()
++        self.addCleanup(self.td.cleanup)
++        for p in (mock.patch.dict(os.environ, {'DM_SPLIT_SPILL_DIR': self.td.name}),
++                  mock.patch.object(shader_split, 'SPILL_BYTES', 1000)):
++            p.start()
++            self.addCleanup(p.stop)
++
++    def batch(self, results):
++        with mock.patch.object(shader_split, 'scan_file', side_effect=list(results)):
++            return shader_split.scan_batch([(r[0], r[0]) for r in results])
++
++    def test_shader_bytes_counts_the_control_sections_and_the_code(self):
++        self.assertEqual(shader_split.shader_bytes(result('a', 100)), 116)
++        self.assertEqual(shader_split.shader_bytes(result('a', 0)), 0)
++        self.assertEqual(shader_split.shader_bytes(('a', {}, set(), ('unreadable', 'why', 1))), 0)
++
++    def test_a_small_batch_goes_through_the_pipe_as_before(self):
++        small = [result('a', 100), result('b', 200)]
++        out = self.batch(small)
++        self.assertEqual(out, small)
++        self.assertEqual(shader_split.batch_result(out), small)
++        self.assertEqual(os.listdir(self.td.name), [])
++
++    def test_a_large_batch_comes_back_whole_through_a_file_that_is_then_removed(self):
++        large = [result('a', 600), result('b', 600), result('c', 0)]
++        out = self.batch(large)
++        self.assertEqual(out[0], 'spilled')
++        self.assertEqual(Path(out[1]).parent, Path(self.td.name))
++        self.assertEqual(shader_split.batch_result(out), large)
++        self.assertFalse(Path(out[1]).exists())
++
++    def test_pooled_keeps_the_job_order_with_spilled_and_piped_batches(self):
++        sizes = {'a': 900, 'b': 900, 'c': 10, 'd': 10, 'e': 5}
++        fake = lambda job: result(job[1], sizes[job[1]])   # noqa: E731
++        jobs = [(k, k) for k in sizes]
++        with mock.patch.object(shader_split, 'scan_file', side_effect=fake), cf.ThreadPoolExecutor(2) as ex, \
++                mock.patch('builtins.print'):
++            out = shader_split.pooled(ex, jobs, len(jobs), chunk=2)
++        self.assertEqual([r[0] for r in out], list(sizes))
++        self.assertEqual([shader_split.shader_bytes(r) for r in out], [916, 916, 26, 26, 21])
++        self.assertEqual(os.listdir(self.td.name), [], 'every spilled batch was read back and removed')
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/dm/gfx/tools/shader_split.py b/dm/gfx/tools/shader_split.py
+index 2827eec..14c15f4 100644
+--- a/dm/gfx/tools/shader_split.py
++++ b/dm/gfx/tools/shader_split.py
+@@ -3164,8 +3164,37 @@ def nso_image(path):   # an NSO's image (dm/tools/nso.py); nso.Error (a ValueErr
+     import nso
+     with open(path, 'rb') as f: return bytes(nso.load(f.read(), path).image)
+ 
++# A pool result goes back to the parent in one pipe write, and on Windows that write fails above 4 GiB (OSError: [WinError 87], CPython's
++# _winapi.WriteFile): a batch of 16 of Pokémon Pokopia's files carried more shader code than that, and the split ended at 79/79 with nothing
++# written. A batch whose shader bytes pass SPILL_BYTES is pickled to a file instead (beside the shader map, DM_SPLIT_SPILL_DIR), and the
++# parent reads it back and removes it (batch_result). Smaller batches go through the pipe as before.
++SPILL_BYTES = 1 << 30
++
++def shader_bytes(result):   # the control sections and code a scan_file result carries, the bulk of what it sends back
++    uniq = result[1] if isinstance(result, tuple) and len(result) > 1 else None
++    if not isinstance(uniq, dict): return 0
++    n = 0
++    for v in uniq.values():
++        if isinstance(v, tuple) and len(v) >= 4:
++            n += sum(len(part) for part in v[2:4] if hasattr(part, '__len__'))
++    return n
++
+ def scan_batch(jobs):   # scan_file over a batch of jobs, in a pool worker
+-    return [scan_file(j) for j in jobs]
++    out = [scan_file(j) for j in jobs]
++    if sum(shader_bytes(r) for r in out) < SPILL_BYTES: return out
++    import pickle, tempfile
++    fd, path = tempfile.mkstemp(prefix='split-batch-', suffix='.pickle', dir=os.environ.get('DM_SPLIT_SPILL_DIR') or None)
++    with os.fdopen(fd, 'wb') as f: pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
++    return ('spilled', path)
++
++def batch_result(r):   # a scan_batch result, read back from its file when the worker spilled it
++    if not (isinstance(r, tuple) and len(r) == 2 and r[0] == 'spilled'): return r
++    import pickle
++    try:
++        with open(r[1], 'rb') as f: return pickle.load(f)
++    finally:
++        try: os.remove(r[1])
++        except OSError: pass
+ 
+ 
+ def pooled(ex, jobs, total, start=0, chunk=1):
+@@ -3173,16 +3202,20 @@ def pooled(ex, jobs, total, start=0, chunk=1):
+     the stage's count). The count is of the jobs finished in any order: counted in order it would stall behind one slow archive range while the others finish"""
+     batches = [jobs[i:i + chunk] for i in range(0, len(jobs), chunk)]
+     futures = {ex.submit(scan_batch, b): len(b) for b in batches}
+-    done, pending, shown = start, set(futures), 0.0
++    done, pending, shown, got = start, set(futures), 0.0, {}
+     while pending:
+         finished, pending = cf.wait(pending, timeout=0.5)
++        for f in finished: got[f] = batch_result(f.result())   # a spilled batch is read back (and its file removed) as soon as it is done
+         done += sum(futures[f] for f in finished)
+         if not pending or time.monotonic() - shown >= 0.5: print(f'progress: {done}/{total}', flush=True); shown = time.monotonic()
+-    return [r for f in futures for r in f.result()]
++    return [r for f in futures for r in got[f]]
+ 
+ 
+ def main():
+     romfs_l, main_l, pkg, mapout, factsout = sys.argv[1:6]
++    if not os.environ.get('DM_SPLIT_SPILL_DIR'):   # a large batch's results go through a file here (scan_batch); the pool's workers inherit it
++        os.environ['DM_SPLIT_SPILL_DIR'] = os.path.dirname(os.path.abspath(mapout)) or '.'
++        os.makedirs(os.environ['DM_SPLIT_SPILL_DIR'], exist_ok=True)
+     pairsout = sys.argv[6] if len(sys.argv) > 6 else None
+     psopairsout = sys.argv[7] if len(sys.argv) > 7 else None   # pso_pairs.tsv: supplemental BAHS program variations and legacy Unity pass-input covers
+     dlc_v = sys.argv[8].split(',') if len(sys.argv) > 8 and sys.argv[8] else []   # extra content has no ExeFS; each root is the extracted DLC index
+@@ -3258,7 +3291,7 @@ def main():
+         import unityfs
+         for k in unityfs.KNOWN_TREES: trees.setdefault(k, unityfs.known_tree(*k))
+         byrel = {r: p for p, r in files}
+-        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, trees, zdicts)) as ex: again = list(ex.map(scan_file, [(byrel[r], r) for r in defer]))
++        with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, trees, zdicts)) as ex: again = [r for b in ex.map(scan_batch, [[(byrel[r], r)] for r in defer]) for r in batch_result(b)]
+         for rel, uniq, pr, extra in again:
+             if extra == 'defer': red(f'{rel}: Unity serialized file without type trees, and no bundle has a Shader type tree of the same hash to borrow')
+         results = [r for r in results if r[3] != 'defer'] + again
