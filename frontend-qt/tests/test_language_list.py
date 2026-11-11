@@ -123,7 +123,11 @@ class SixthLanguage(unittest.TestCase):
         listing = self.run_in_new_process('from nspb_qt.i18n import Lang\nprint([(l.code, l.name) for l in Lang.all()][-1], Lang.all()[-2].other.name)')
         self.assertEqual(listing, "('xx', 'Xenia') Xenia")
         self.assertEqual(self.run_in_new_process('from nspb_qt.i18n import Lang\nprint(Lang.initial().code)', NSPB_LANG='xx'), 'xx')
-        device = 'import locale\nlocale.getlocale = lambda *a: ("xx_YY", None)   # the device language\nfrom nspb_qt.i18n import Lang\nprint(Lang.initial().code)'
+        # The device language. Windows is asked before the locale (i18n.Lang.initial), so there it gives none: a French Windows
+        # answered "fr" and the test failed on every Windows clone.
+        device = ('import locale, sys\nlocale.getlocale = lambda *a: ("xx_YY", None)\n'
+                  'if sys.platform.startswith("win"):\n    import ctypes\n    ctypes.windll.kernel32.GetLocaleInfoW = lambda *a: 0\n'
+                  'from nspb_qt.i18n import Lang\nprint(Lang.initial().code)')
         self.assertEqual(self.run_in_new_process(device), 'xx')
         self.assertEqual(self.run_in_new_process('from nspb_qt.l10n import t\nfrom nspb_qt.i18n import Lang\nprint(t("onboarding.start", Lang("xx")))'), 'Go')
 

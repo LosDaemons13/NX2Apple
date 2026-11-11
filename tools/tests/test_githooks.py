@@ -216,6 +216,16 @@ class PushedPaths(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], 'python3 tools/engine.py check')
         self.assertIn('Reproduce: python3 tools/engine.py check', err.getvalue())
 
+    def test_without_swift_both_swift_packages_are_left_to_ci(self):
+        """A Windows clone has no swift: a push that touched frontend-ios/ stopped on `swift build` not found."""
+        out = io.StringIO()
+        with mock.patch.object(H.shutil, 'which', return_value=None), mock.patch.object(H, 'sh', return_value=0) as run, \
+                contextlib.redirect_stdout(out):
+            code = H.run('pre-push', H.checks_for(['frontend/a.swift', 'frontend-ios/Package.swift']))
+        self.assertEqual(code, 0)
+        self.assertEqual([c.args[0] for c in run.call_args_list], [H.SYNC])
+        self.assertIn('iOS shell (slow) skipped, swift is not installed', out.getvalue())
+
     def test_a_patch_push_does_not_sync_the_engine_or_run_slow_checks(self):
         with mock.patch.object(H, 'sh', return_value=0) as run:
             code, _ = self.run_hook('.upstream-ref')
