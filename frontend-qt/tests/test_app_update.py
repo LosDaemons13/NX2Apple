@@ -163,6 +163,50 @@ class AppUpdateTests(unittest.TestCase):
         self.assertEqual(env['NX_OLD_EXE'], 'NS Port Builder.exe')
         self.assertEqual(env['NX_NEW_EXE'], 'NX2Apple.exe')
         self.assertEqual(env['NX_TARGET'], str(old_exe.resolve().parent))
+        self.assertTrue(env['NX_LOG'].endswith(app_update.UPDATE_LOG_NAME))
+        if os.name == 'nt':
+            flags = kwargs['creationflags']
+            self.assertFalse(flags & 0x00000008, 'DETACHED_PROCESS: Windows PowerShell exits at once and runs nothing')
+            self.assertTrue(flags & 0x08000000)
+
+    def test_a_job_that_refuses_breakaway_still_gets_the_updater(self) -> None:
+        staged = app_update.StagedUpdate(release=None, app_dir=self.tmp, exe_name='NX2Apple.exe', staging_root=self.tmp)
+        tried: list = []
+
+        def fake_popen(cmd, **kwargs):
+            tried.append(kwargs.get('creationflags'))
+            if len(tried) == 1 and os.name == 'nt':
+                raise PermissionError(5, 'Access is denied')
+
+        self.assertTrue(app_update.relaunch_windows_update(staged, current_exe=self.tmp / 'NX2Apple.exe', pid=1, popen=fake_popen))
+        if os.name == 'nt':
+            self.assertEqual(tried, [0x08000000 | 0x01000000, 0x08000000])
+
+    @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell') and shutil.which('robocopy'), 'Windows only')
+    def test_the_real_updater_copies_the_new_version_in(self) -> None:
+        """The script itself, as the launcher starts it. Every update up to 1.4.0.17 closed the launcher and copied nothing:
+        Windows PowerShell started with DETACHED_PROCESS exits at once with code 0."""
+        import subprocess
+        import time
+        stage = self.tmp / 'nx2apple-update'
+        new = stage / 'unpacked' / 'NX2Apple' / '_internal'
+        new.mkdir(parents=True)
+        (new / 'version.txt').write_text('new')
+        target = self.tmp / 'NX2Apple'
+        (target / '_internal').mkdir(parents=True)
+        (target / '_internal' / 'version.txt').write_text('old')
+        gone = subprocess.Popen(['cmd', '/c', 'exit'])
+        gone.wait()
+        log = self.tmp / 'update.log'
+        staged = app_update.StagedUpdate(release=None, app_dir=new.parent, exe_name='NX2Apple.exe', staging_root=stage)
+        self.assertTrue(app_update.relaunch_windows_update(staged, current_exe=target / 'NX2Apple.exe', pid=gone.pid, log_path=log))
+        for _ in range(600):
+            if not stage.exists():
+                break
+            time.sleep(0.1)
+        self.assertEqual((target / '_internal' / 'version.txt').read_text(), 'new')
+        self.assertFalse(stage.exists(), 'the staged copy goes once it is in')
+        self.assertIn('robocopy exit code 1', log.read_text(encoding='utf-8'))
 
     def test_library_horizontal_strip_does_not_widen_hero_or_page_and_scrolls_cards(self) -> None:
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')

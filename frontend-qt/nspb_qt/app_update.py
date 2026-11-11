@@ -330,19 +330,32 @@ def stage_zip(
     return StagedUpdate(release=release, app_dir=app_dir, exe_name=exe_name, staging_root=staging_root)
 
 
-#: Pure-ASCII PowerShell script that waits for the running process to exit, copies the staged
-#: update into place with robocopy (retrying locked files), removes a legacy exe name when
-#: transitioning from `NS Port Builder.exe` to `NX2Apple.exe`, and relaunches the new executable.
+#: Pure-ASCII PowerShell script that waits for the running process to exit (and stops it when it has not
+#: after 30 s), copies the staged update into place with robocopy (retrying locked files), removes a legacy
+#: exe name when transitioning from `NS Port Builder.exe` to `NX2Apple.exe`, and relaunches the executable.
+#: Each step goes to `NX_LOG`. A copy that fails (robocopy 8 or more) keeps the staged update for another try.
 WINDOWS_RELAUNCH_PS1 = (
+    "$log = $env:NX_LOG; "
+    "function Note($m) { if ($log) { Add-Content -LiteralPath $log -Value ((Get-Date -Format s) + ' ' + $m) -ErrorAction SilentlyContinue } }; "
+    "Note ('update of ' + $env:NX_TARGET + ' from ' + $env:NX_STAGED); "
     "$pidToWait = [int]$env:NX_PID; "
     "for ($i = 0; $i -lt 150; $i++) { "
     "if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }; "
     "Start-Sleep -Milliseconds 200 "
     "}; "
+    "if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { "
+    "Note 'the launcher was still open after 30 s: stopped'; "
+    "Stop-Process -Id $pidToWait -Force -ErrorAction SilentlyContinue; "
+    "for ($i = 0; $i -lt 50; $i++) { if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 200 } "
+    "}; "
     "Start-Sleep -Milliseconds 400; "
-    "& robocopy $env:NX_STAGED $env:NX_TARGET /E /IS /IT /IM /NFL /NDL /NJH /NJS /R:10 /W:1 | Out-Null; "
+    "$copy = @($env:NX_STAGED, $env:NX_TARGET, '/E', '/IS', '/IT', '/IM', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:20', '/W:1'); "
+    "if ($log) { $copy += ('/LOG+:' + $log) }; "
+    "& robocopy @copy | Out-Null; "
+    "$rc = $LASTEXITCODE; "
+    "Note ('robocopy exit code ' + $rc); "
     "$newExe = Join-Path $env:NX_TARGET $env:NX_NEW_EXE; "
-    "if (($env:NX_OLD_EXE -ne $env:NX_NEW_EXE) -and (Test-Path -LiteralPath $newExe)) { "
+    "if (($rc -lt 8) -and ($env:NX_OLD_EXE -ne $env:NX_NEW_EXE) -and (Test-Path -LiteralPath $newExe)) { "
     "$oldExe = Join-Path $env:NX_TARGET $env:NX_OLD_EXE; "
     "Remove-Item -LiteralPath $oldExe -Force -ErrorAction SilentlyContinue "
     "}; "
@@ -350,12 +363,24 @@ WINDOWS_RELAUNCH_PS1 = (
     "-ErrorAction SilentlyContinue; "
     "$launchExe = if (Test-Path -LiteralPath $newExe) { $newExe } else { Join-Path $env:NX_TARGET $env:NX_OLD_EXE }; "
     "if (Test-Path -LiteralPath $launchExe) { "
-    "Start-Process -FilePath $launchExe -WorkingDirectory $env:NX_TARGET "
+    "Start-Process -FilePath $launchExe -WorkingDirectory $env:NX_TARGET; "
+    "Note ('started ' + $launchExe) "
     "}; "
-    "if ($env:NX_STAGE_ROOT -and (Test-Path -LiteralPath $env:NX_STAGE_ROOT)) { "
+    "if ($rc -ge 8) { Note 'FAILED: the staged update is kept' } "
+    "elseif ($env:NX_STAGE_ROOT -and (Test-Path -LiteralPath $env:NX_STAGE_ROOT)) { "
     "Remove-Item -LiteralPath $env:NX_STAGE_ROOT -Recurse -Force -ErrorAction SilentlyContinue "
     "}"
 )
+
+#: Where the updater writes what it did (WINDOWS_RELAUNCH_PS1), beside the staging folder.
+UPDATE_LOG_NAME = 'nx2apple-update.log'
+
+#: CreateProcess flags. CREATE_NO_WINDOW gives PowerShell a console it does not show. Not DETACHED_PROCESS:
+#: Windows PowerShell started without any console exits at once with code 0 and runs nothing, so every update
+#: closed the launcher and left it as it was (1.4.0.17 and before; the player had to unzip each release by hand).
+#: CREATE_BREAKAWAY_FROM_JOB keeps the updater alive when the launcher runs inside a job that is closed with it.
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def relaunch_windows_update(
@@ -363,8 +388,9 @@ def relaunch_windows_update(
     current_exe: Path | None = None,
     pid: int | None = None,
     popen=subprocess.Popen,
+    log_path: Path | None = None,
 ) -> bool:
-    """Spawn a detached background process on Windows to swap `staged` in after `pid` exits."""
+    """Spawn a background process on Windows that swaps `staged` in after `pid` exits."""
     exe_path = (current_exe or Path(sys.executable)).resolve()
     target_dir = exe_path.parent
     env = os.environ.copy()
@@ -376,6 +402,7 @@ def relaunch_windows_update(
     env['NX_OLD_EXE'] = exe_path.name
     env['NX_NEW_EXE'] = staged.exe_name
     env['NX_STAGE_ROOT'] = str(staged.staging_root)
+    env['NX_LOG'] = str(log_path or Path(tempfile.gettempdir()) / UPDATE_LOG_NAME)
 
     kwargs: dict = {
         'stdin': subprocess.DEVNULL,
@@ -384,14 +411,14 @@ def relaunch_windows_update(
         'close_fds': True,
         'env': env,
     }
-    if os.name == 'nt':
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) | getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
-        kwargs['creationflags'] = flags
-    try:
-        popen(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', WINDOWS_RELAUNCH_PS1],
-            **kwargs,
-        )
-        return True
-    except OSError:
-        return False
+    cmd = ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', WINDOWS_RELAUNCH_PS1]
+    # A job that forbids breaking away refuses the flag (access denied): then without it.
+    for flags in ((_CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB, _CREATE_NO_WINDOW) if os.name == 'nt' else (None,)):
+        if flags is not None:
+            kwargs['creationflags'] = flags
+        try:
+            popen(cmd, **kwargs)
+            return True
+        except OSError:
+            continue
+    return False
