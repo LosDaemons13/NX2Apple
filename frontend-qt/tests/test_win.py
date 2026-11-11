@@ -2612,6 +2612,40 @@ class WindowsBuildFixesTest(unittest.TestCase):
         build_app_src = (QT / 'nspb_qt/win/build_app.py').read_text(encoding='utf-8')
         self.assertIn('host_msl_gen.h', build_app_src)
 
+    def test_xcrun_shim_keeps_a_precompiled_headers_source_where_later_compiles_find_it(self) -> None:
+        """A PCH records its header's absolute path and every compile checks it. Staged in the call's temporary folder,
+        the header was gone at the first compile ("malformed or corrupted AST file: could not find file
+        ...nspb-metal-...\\prefix.h"), so every shader compiled without the PCH, about 40% slower per shader."""
+        from nspb_qt.win import xcrun_shim
+        seen: list[list[str]] = []
+
+        def fake_run(cmd, *a, **k):
+            seen.append([str(c) for c in cmd])
+            out = Path(k['cwd']) / next(c for c in cmd if str(c).startswith('out'))
+            out.write_bytes(b'PCH')
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with tempfile.TemporaryDirectory() as td:
+            for folder in ('pch_plain', 'pch with space'):
+                d = Path(td) / folder
+                d.mkdir()
+                header = d / 'prefix.h'
+                header.write_text('#include <metal_stdlib>\n', encoding='utf-8')
+                seen.clear()
+                with mock.patch.object(xcrun_shim, 'find', side_effect=lambda sdk, tool: Path(f'C:/metal/{tool}.exe')), \
+                        mock.patch.object(subprocess, 'run', side_effect=fake_run):
+                    rc = xcrun_shim.main(['-sdk', 'iphoneos', 'metal', '-x', 'metal-header', str(header),
+                                          '-o', str(d / 'prefix.pch')])
+                self.assertEqual(rc, 0)
+                passed = next(a for a in seen[0] if a.endswith('.h'))
+                if ' ' not in str(header):
+                    self.assertEqual(passed, str(header), 'a path metal.exe can open stays as it is')
+                else:
+                    self.assertNotEqual(passed, str(header))
+                    self.assertNotIn(' ', passed)
+                    self.assertTrue(Path(passed).is_file(), 'the copy outlives the call, for the compiles that follow')
+                    self.assertIn('nspb-metal-headers', passed)
+
     def test_xcrun_shim_splits_compile_and_link_and_stages_paths_with_spaces(self) -> None:
         from nspb_qt.win import xcrun_shim
         calls: list[tuple[list[str], str | None]] = []

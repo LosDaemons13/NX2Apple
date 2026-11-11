@@ -152,6 +152,21 @@ def _safe_suffix(p: Path, default: str) -> str:
     return sfx if (sfx and not _needs_staging(sfx)) else default
 
 
+def _kept_header_copy(src: Path, ascii_base: Path) -> Path:
+    """A copy of `src` under an ASCII, space-free folder that outlives the call (a PCH names it), with its date."""
+    import hashlib
+    key = hashlib.sha1(str(src.resolve()).encode('utf-8', 'replace')).hexdigest()[:12]
+    dst = ascii_base / 'nspb-metal-headers' / key / (src.name if not _needs_staging(src.name) else 'prefix.h')
+    try:
+        same = dst.is_file() and dst.stat().st_size == src.stat().st_size and dst.stat().st_mtime_ns == src.stat().st_mtime_ns
+    except OSError:
+        same = False
+    if not same:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    return dst
+
+
 def _run_metal_staged(sdk: str, tool: str, exe: Path, rest: list[str]) -> int:
     """Run `metal.exe` or `metallib.exe` in a pure-ASCII, space-free staging directory.
 
@@ -190,6 +205,16 @@ def _run_metal_staged(sdk: str, tool: str, exe: Path, rest: list[str]) -> int:
                                 shutil.copyfile(hdr, td_path / hdr.name)
                     staged.extend(['-include-pch', local_pch])
                 i += 2
+                continue
+            if not a.startswith('-') and a.endswith('.h') and Path(a).is_file():
+                # A header is what a precompiled header records by its absolute path, and every compile that
+                # includes the PCH checks that file again. Staged in this call's temporary folder, it was gone
+                # by the first compile ("malformed or corrupted AST file: could not find file ...\\nspb-metal-
+                # ...\\prefix.h"), so every shader of every build compiled without the PCH (dmsh_pch.py): much
+                # slower. It stays where it is when metal.exe can open that path, else a copy that is kept.
+                staged.append(a if not _needs_staging(a) and Path(a).is_absolute()
+                              else str(_kept_header_copy(Path(a), td_path.parent)))
+                i += 1
                 continue
             if not a.startswith('-') and (a.endswith(('.metal', '.air', '.dia', '.pch', '.h'))
                                           or (_needs_staging(a) and Path(a).is_file())):
