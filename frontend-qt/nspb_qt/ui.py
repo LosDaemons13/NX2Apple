@@ -1239,6 +1239,11 @@ class MainWindow(QMainWindow):
         self.publish_btn.setObjectName('creamPill')
         self.publish_btn.clicked.connect(self._publish_to_github)
         rs2_lay.addWidget(self.publish_btn)
+        # the home Wi-Fi instead of GitHub: no 2 GB limit, and the games' data too (wifi_share.py)
+        self.wifi_btn = QPushButton(self.m.t('wifi.button'))
+        self.wifi_btn.setObjectName('ghost')
+        self.wifi_btn.clicked.connect(self._open_wifi_share)
+        rs2_lay.addWidget(self.wifi_btn)
         self._publish_job: dict | None = None
         self._publish_timer = QTimer(self)
         self._publish_timer.setInterval(250)
@@ -1344,6 +1349,7 @@ class MainWindow(QMainWindow):
         self.step2_title.setText('②  ' + self.m.t('shell.step2Title'))
         self.step2_sub.setText(self.m.t('shell.oneGameStep2Sub' if one else 'shell.step2Sub'))
         self.publish_btn.setText(self.m.t('github.publish'))
+        self.wifi_btn.setText(self.m.t('wifi.button'))
         self.publish_btn.setEnabled(has_ipa and self._publish_job is None and not self.m.running)
         if self._publish_job is None and not getattr(self, '_publish_said', ''):
             self.publish_status.setText(self.m.t('github.publishNote'))
@@ -1407,6 +1413,21 @@ class MainWindow(QMainWindow):
             if source is not None and source.stat().st_mtime > packed:
                 return True
         return False
+
+    def _open_wifi_share(self) -> None:
+        """Open (or bring forward) the window that serves the IPA and the games' data on the home Wi-Fi."""
+        from .wifi_dialog import WifiShareDialog
+        dlg = getattr(self, '_wifi_dialog', None)
+        try:
+            if dlg is not None and dlg.isVisible():
+                dlg.raise_()
+                dlg.activateWindow()
+                return
+        except RuntimeError:   # closed: Qt deleted it
+            pass
+        from .win import shell_export as se
+        self._wifi_dialog = WifiShareDialog(self.m, se.ipa_path(self.m.shell_cache_path), parent=self)
+        self._wifi_dialog.show()
 
     def _publish_to_github(self) -> None:
         if self._publish_job is not None or self.m.running:

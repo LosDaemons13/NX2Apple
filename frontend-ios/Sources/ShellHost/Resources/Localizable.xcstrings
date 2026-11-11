@@ -833,6 +833,70 @@
         }
       }
     },
+    "%@ to receive": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ zu empfangen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ to receive"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ por recibir"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ à recevoir"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ da ricevere"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受信するデータ：%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "받을 용량: %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ a receber"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ att ta emot"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待接收 %@"
+          }
+        }
+      }
+    },
     "%@ was built from version %@, but it only runs in version %@. It will most likely crash at start. Build it again on the PC with update %@.": {
       "localizations": {
         "de": {
@@ -1213,6 +1277,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "在此设备、外置硬盘或 Mac 上选择 RomFS 文件夹或 romfs.img。iOS 启动器会记住该位置。"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinden"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se connecter"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connetti"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "연결"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anslut"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接"
           }
         }
       }
@@ -2241,6 +2369,134 @@
         }
       }
     },
+    "Not enough space on this iPhone: %@ needed, %@ free.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht genug Speicher auf diesem iPhone: %@ nötig, %@ frei."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not enough space on this iPhone: %@ needed, %@ free."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay espacio suficiente en este iPhone: se necesitan %@, hay %@ libres."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas assez de place sur cet iPhone : %@ nécessaires, %@ libres."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spazio insufficiente su questo iPhone: servono %@, liberi %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone の空き容量が足りません：必要 %@、空き %@。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 iPhone의 공간이 부족합니다: 필요 %@, 여유 %@."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espaço insuficiente neste iPhone: %@ necessários, %@ livres."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inte tillräckligt med utrymme på den här iPhonen: %@ behövs, %@ ledigt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 iPhone 空间不足：需要 %@，可用 %@。"
+          }
+        }
+      }
+    },
+    "Not in this app yet": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch nicht in dieser App"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not in this app yet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no está en esta app"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas encore dans l’app"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non ancora in questa app"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "まだこのアプリにありません"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "아직 이 앱에 없음"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ainda não está neste app"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inte i appen än"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未在此应用中"
+          }
+        }
+      }
+    },
     "OK": {
       "localizations": {
         "de": {
@@ -2433,6 +2689,198 @@
         }
       }
     },
+    "On the PC": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf dem PC"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On the PC"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En el PC"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur le PC"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sul PC"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC 上"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC에 있음"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No PC"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "På datorn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上"
+          }
+        }
+      }
+    },
+    "On the PC, open NX2Apple › Builds › Send to iPhone (Wi-Fi) and type the address it shows. Keep this iPhone on the same Wi-Fi, unlocked, with this screen open.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öffne auf dem PC NX2Apple › Builds › An iPhone senden (WLAN) und gib die angezeigte Adresse ein. Lass dieses iPhone im selben WLAN, entsperrt und mit diesem Bildschirm offen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On the PC, open NX2Apple › Builds › Send to iPhone (Wi-Fi) and type the address it shows. Keep this iPhone on the same Wi-Fi, unlocked, with this screen open."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En el PC, abre NX2Apple › Compilaciones › Enviar al iPhone (Wi-Fi) y escribe la dirección que muestra. Deja este iPhone en la misma Wi-Fi, desbloqueado y con esta pantalla abierta."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur le PC, ouvrez NX2Apple › Compilations › Envoyer à l’iPhone (Wi-Fi) et saisissez l’adresse affichée. Gardez cet iPhone sur le même Wi-Fi, déverrouillé, avec cet écran ouvert."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sul PC, apri NX2Apple › Compilazioni › Invia all’iPhone (Wi-Fi) e digita l’indirizzo mostrato. Tieni questo iPhone sulla stessa Wi-Fi, sbloccato e con questa schermata aperta."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC で NX2Apple ›「ビルド」›「iPhone に送信（Wi-Fi）」を開き、表示されたアドレスを入力してください。この iPhone は同じ Wi-Fi のまま、ロックせず、この画面を開いたままにしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC에서 NX2Apple › 빌드 › iPhone으로 보내기(Wi-Fi)를 열고 표시된 주소를 입력하세요. 이 iPhone은 같은 Wi-Fi에서 잠금 해제 상태로 이 화면을 연 채 두세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No PC, abra NX2Apple › Compilações › Enviar ao iPhone (Wi-Fi) e digite o endereço mostrado. Mantenha este iPhone no mesmo Wi-Fi, desbloqueado e com esta tela aberta."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öppna NX2Apple › Byggen › Skicka till iPhone (Wi-Fi) på datorn och skriv adressen som visas. Låt den här iPhonen vara på samma Wi-Fi, upplåst och med den här skärmen öppen."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在电脑上打开 NX2Apple › 构建 › 发送到 iPhone（Wi-Fi），输入显示的地址。让这台 iPhone 保持在同一 Wi-Fi、不锁屏并停留在此界面。"
+          }
+        }
+      }
+    },
+    "On this iPhone": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf diesem iPhone"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On this iPhone"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En este iPhone"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur cet iPhone"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Su questo iPhone"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone にあります"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 iPhone에 있음"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neste iPhone"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "På den här iPhonen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在这台 iPhone 上"
+          }
+        }
+      }
+    },
     "Only the end of the log is shown.": {
       "localizations": {
         "de": {
@@ -2493,6 +2941,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "仅显示日志末尾部分。"
+          }
+        }
+      }
+    },
+    "PC address": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC-Adresse"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC address"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dirección del PC"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adresse du PC"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indirizzo del PC"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC のアドレス"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC 주소"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Endereço do PC"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datorns adress"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑地址"
           }
         }
       }
@@ -2813,6 +3325,198 @@
           "stringUnit": {
             "state": "translated",
             "value": "退出%@？"
+          }
+        }
+      }
+    },
+    "Receive (%@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empfangen (%@)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receive (%@)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recibir (%@)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recevoir (%@)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricevi (%@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受信（%@）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "받기 (%@)"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receber (%@)"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ta emot (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接收（%@）"
+          }
+        }
+      }
+    },
+    "Receive from PC": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vom PC empfangen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receive from PC"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recibir del PC"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recevoir du PC"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricevi dal PC"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC から受信"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC에서 받기"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receber do PC"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ta emot från datorn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从电脑接收"
+          }
+        }
+      }
+    },
+    "Received. The games are ready.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empfangen. Die Spiele sind bereit."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Received. The games are ready."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recibido. Los juegos están listos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reçu. Les jeux sont prêts."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricevuto. I giochi sono pronti."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受信しました。ゲームの準備ができました。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "받았습니다. 게임이 준비되었습니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recebido. Os jogos estão prontos."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mottaget. Spelen är redo."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已接收。游戏已就绪。"
           }
         }
       }
@@ -3201,6 +3905,70 @@
         }
       }
     },
+    "Stop": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stoppen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interrompi"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중지"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parar"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stoppa"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        }
+      }
+    },
     "Swap A and B": {
       "localizations": {
         "de": {
@@ -3261,6 +4029,134 @@
           "stringUnit": {
             "state": "translated",
             "value": "交换 A 和 B"
+          }
+        }
+      }
+    },
+    "That address is not NX2Apple's share on the PC.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Adresse ist nicht die NX2Apple-Freigabe auf dem PC."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That address is not NX2Apple's share on the PC."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esa dirección no es el uso compartido de NX2Apple en el PC."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette adresse n’est pas le partage de NX2Apple sur le PC."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo indirizzo non è la condivisione di NX2Apple sul PC."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアドレスは PC 上の NX2Apple の共有ではありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 주소는 PC의 NX2Apple 공유가 아닙니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esse endereço não é o compartilhamento do NX2Apple no PC."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adressen är inte NX2Apples delning på datorn."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此地址不是电脑上 NX2Apple 的共享。"
+          }
+        }
+      }
+    },
+    "That address is not one the PC shows. It looks like 192.168.1.20:8765/abc234.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das ist nicht die Adresse, die der PC zeigt. Sie sieht so aus: 192.168.1.20:8765/abc234."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That address is not one the PC shows. It looks like 192.168.1.20:8765/abc234."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esa no es la dirección que muestra el PC. Se parece a 192.168.1.20:8765/abc234."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette adresse n’est pas celle qu’affiche le PC. Elle ressemble à 192.168.1.20:8765/abc234."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non è l’indirizzo mostrato dal PC. Ha questa forma: 192.168.1.20:8765/abc234."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC に表示されているアドレスではありません。192.168.1.20:8765/abc234 のような形です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC에 표시된 주소가 아닙니다. 192.168.1.20:8765/abc234 같은 형태입니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esse não é o endereço que o PC mostra. Ele se parece com 192.168.1.20:8765/abc234."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Det är inte adressen som datorn visar. Den ser ut som 192.168.1.20:8765/abc234."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这不是电脑上显示的地址。它的格式类似 192.168.1.20:8765/abc234。"
           }
         }
       }
@@ -3389,6 +4285,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法记住该位置。请换一个试试。"
+          }
+        }
+      }
+    },
+    "The PC answered with an error (%lld). Check the address in the launcher's Send to iPhone window.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der PC hat mit einem Fehler geantwortet (%lld). Prüfe die Adresse im Fenster „An iPhone senden“ des Launchers."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The PC answered with an error (%lld). Check the address in the launcher's Send to iPhone window."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El PC respondió con un error (%lld). Comprueba la dirección en la ventana Enviar al iPhone del launcher."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le PC a répondu par une erreur (%lld). Vérifiez l’adresse dans la fenêtre Envoyer à l’iPhone du launcher."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il PC ha risposto con un errore (%lld). Controlla l’indirizzo nella finestra Invia all’iPhone del launcher."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC がエラー（%lld）を返しました。ランチャーの「iPhone に送信」ウインドウでアドレスを確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PC가 오류(%lld)로 응답했습니다. 런처의 iPhone으로 보내기 창에서 주소를 확인하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O PC respondeu com um erro (%lld). Confira o endereço na janela Enviar ao iPhone do launcher."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datorn svarade med ett fel (%lld). Kontrollera adressen i startprogrammets fönster Skicka till iPhone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑返回了错误（%lld）。请在启动器的“发送到 iPhone”窗口中检查地址。"
           }
         }
       }
@@ -4605,6 +5565,134 @@
           "stringUnit": {
             "state": "translated",
             "value": "此游戏的设置列表缺失。请在 Mac 上的启动器中重新构建。"
+          }
+        }
+      }
+    },
+    "This iPhone already has every game's data the PC offers.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieses iPhone hat schon die Daten aller Spiele, die der PC anbietet."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This iPhone already has every game's data the PC offers."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este iPhone ya tiene los datos de todos los juegos que ofrece el PC."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet iPhone a déjà les données de tous les jeux proposés par le PC."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo iPhone ha già i dati di tutti i giochi offerti dal PC."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この iPhone には PC が提供するすべてのゲームのデータがすでにあります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 iPhone에는 PC가 제공하는 모든 게임 데이터가 이미 있습니다."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este iPhone já tem os dados de todos os jogos que o PC oferece."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Den här iPhonen har redan data för alla spel som datorn erbjuder."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 iPhone 已有电脑提供的所有游戏数据。"
+          }
+        }
+      }
+    },
+    "This screen could not open here. Open the app on its own and try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Bildschirm konnte hier nicht öffnen. Öffne die App für sich und versuche es erneut."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This screen could not open here. Open the app on its own and try again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta pantalla no se pudo abrir aquí. Abre la app sola y vuelve a intentarlo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet écran n’a pas pu s’ouvrir ici. Ouvrez l’app seule et réessayez."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questa schermata non si è potuta aprire qui. Apri l’app da sola e riprova."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここではこの画面を開けませんでした。アプリを単独で開いてもう一度お試しください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여기서는 이 화면을 열 수 없습니다. 앱을 단독으로 열고 다시 시도하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta tela não pôde abrir aqui. Abra o app sozinho e tente de novo."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skärmen kunde inte öppnas här. Öppna appen för sig och försök igen."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此界面无法在这里打开。请单独打开应用后重试。"
           }
         }
       }

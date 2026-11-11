@@ -433,6 +433,14 @@ def _update_shell_plist(staged_app: Path, bundle_id: str, repo: Path) -> None:
     if commit:
         info['DMCommit'] = commit
     info['DMForkPatches'] = _dm_fork_patches(repo)
+    # "Receive from PC" fetches the games' data from this launcher on the home Wi-Fi (wifi_share.py, PCTransfer.swift):
+    # iOS lets an app reach the local network only when it says why (else the requests fail without a prompt), and a
+    # plain http address on the local network needs ATS's local exception.
+    info.setdefault('NSLocalNetworkUsageDescription',
+                    "NX2Apple receives your games' data from the NX2Apple launcher on your PC, over your Wi-Fi.")
+    ats = dict(info.get('NSAppTransportSecurity') or {})
+    ats['NSAllowsLocalNetworking'] = True
+    info['NSAppTransportSecurity'] = ats
     with open(plist_p, 'wb') as f:
         plistlib.dump(info, f, fmt=plistlib.FMT_XML, sort_keys=True)
 

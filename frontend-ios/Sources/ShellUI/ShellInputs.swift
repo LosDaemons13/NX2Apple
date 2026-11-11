@@ -257,6 +257,8 @@ public struct ShellActions {
     public var onButtonTest: (Bool) -> Void
     /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
     public var onDeleteGame: (_ gameID: String, _ saves: Bool) -> Void
+    /// Opens "Receive from PC": the games' data from the Windows launcher's Wi-Fi share.
+    public var onReceiveFromPC: () -> Void
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
@@ -268,7 +270,8 @@ public struct ShellActions {
                 onClearShellCloud: @escaping () -> Void = {},
                 onGlobalPadMapChange: @escaping (String, String) -> Void = { _, _ in },
                 onGlobalPadMapReset: @escaping () -> Void = {}, onButtonTest: @escaping (Bool) -> Void = { _ in },
-                onDeleteGame: @escaping (String, Bool) -> Void = { _, _ in }) {
+                onDeleteGame: @escaping (String, Bool) -> Void = { _, _ in },
+                onReceiveFromPC: @escaping () -> Void = {}) {
         self.onSelect = onSelect
         self.onPlay = onPlay
         self.onChange = onChange
@@ -289,5 +292,6 @@ public struct ShellActions {
         self.onGlobalPadMapReset = onGlobalPadMapReset
         self.onButtonTest = onButtonTest
         self.onDeleteGame = onDeleteGame
+        self.onReceiveFromPC = onReceiveFromPC
     }
 }

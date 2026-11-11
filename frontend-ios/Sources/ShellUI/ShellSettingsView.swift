@@ -81,6 +81,12 @@ struct ShellSettingsView: View {
                     }
                     .accessibilityIdentifier("shellSettings.data")
                     .shellTarget("shs.data", action: actions.onPickShellData)
+                    Button(action: actions.onReceiveFromPC) {
+                        Label(ShellStrings.text("Receive from PC"), systemImage: "wifi")
+                            .labelStyle(SettingsRowLabelStyle())
+                    }
+                    .accessibilityIdentifier("shellSettings.receive")
+                    .shellTarget("shs.receive", action: actions.onReceiveFromPC)
                     if store.dataFolderName != nil {
                         Button(ShellStrings.text("Remove"), role: .destructive, action: actions.onClearShellData)
                             .accessibilityIdentifier("shellSettings.data.remove")

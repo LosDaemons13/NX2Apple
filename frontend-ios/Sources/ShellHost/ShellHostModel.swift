@@ -57,6 +57,8 @@ public struct ShellHostConfig: Sendable {
     public var notice: String?
     /// A Play held back until the player answers: the game was built from a version its profile was not brought up on.
     public var versionWarning: VersionWarning?
+    /// "Receive from PC" while its screen is open (PCTransfer.swift).
+    public private(set) var receiver: PCReceiver?
     /// The log the host view shows in a read-only sheet.
     public var log: LogPresentation?
     /// Play is preparing the game's resources or handing over to the engine.
@@ -397,7 +399,28 @@ public struct ShellHostConfig: Sendable {
             },
             onGlobalPadMapReset: { [weak self] in self?.shellSettings.resetPadMap(); self?.refreshAll() },
             onButtonTest: { [weak self] open in self?.buttonTest(open) },
-            onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
+            onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
+            onReceiveFromPC: { [weak self] in self?.openReceiver() })
+    }
+
+    /// Opens "Receive from PC". The games' data arrives in the app's own folder; the library looks again when it is in.
+    public func openReceiver() {
+        guard receiver == nil else { return }
+        let r = PCReceiver(appDataRoot: config.appDataRoot, installedIDs: Set(entries.map { $0.id.uppercased() }),
+                           onFinished: { [weak self] in self?.reload() })
+        receiver = r
+        #if canImport(UIKit)
+        if ReceiveFromPCPresenter.present(r, onClose: { [weak self] in self?.receiver = nil }) == nil {
+            receiver = nil
+            notice = hostText("This screen could not open here. Open the app on its own and try again.")
+        }
+        #endif
+    }
+
+    /// Closes "Receive from PC" (the screen's Done does it on the iPhone).
+    public func closeReceiver() {
+        receiver?.cancel()
+        receiver = nil
     }
 
     public func change(_ id: String, setting: String, value: String) {
