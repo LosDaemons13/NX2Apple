@@ -27,9 +27,19 @@ public struct GameTile: Identifiable, Equatable, Sendable {
     public var recentlyPlayed: String?
     /// The engine's manifest says it is a Switch 2 game: the detail view marks it and warns about its memory.
     public var isSwitch2: Bool
+    /// The front of the game's case (portrait box art), from `cover.<ext>` in the game's folder. The carousel and the open
+    /// case draw it. Without one they cut the banner to the case's shape.
+    public var cover: Artwork?
+    /// Seconds played in this app, and how many times the game was started, for the open case's header.
+    public var playSeconds: Int
+    public var launches: Int
     public init(id: String, title: String, subtitle: String = "", banner: Artwork? = nil, icon: Artwork? = nil,
-                state: GameState = .playable, recentlyPlayed: String? = nil, version: String = "", isSwitch2: Bool = false) {
+                state: GameState = .playable, recentlyPlayed: String? = nil, version: String = "", isSwitch2: Bool = false,
+                cover: Artwork? = nil, playSeconds: Int = 0, launches: Int = 0) {
         self.isSwitch2 = isSwitch2
+        self.cover = cover
+        self.playSeconds = playSeconds
+        self.launches = launches
         self.id = id
         self.title = title
         self.subtitle = subtitle

@@ -38,6 +38,9 @@ public struct CatalogueEntry: Equatable, Sendable, Identifiable {
     /// The game's framework folder: inside `directory` for a `Games/<title ID>/` bundle, `directory` itself for an
     /// embedded `<Name>.framework`. Nil while the manifest could not be read.
     public var frameworkURL: URL?
+
+    /// The front of the game's case, `cover.<ext>` beside the banner: portrait box art the player chose on the PC.
+    public var coverURL: URL?
 }
 
 /// Discovers games from a folder of bundles: `Games/<title ID>/` with `game.manifest.json`, `launcher.json`, the
@@ -71,6 +74,7 @@ public enum GameCatalogue {
     public static func read(directory dir: URL, fileManager fm: FileManager = .default) -> CatalogueEntry {
         let id = dir.lastPathComponent
         var entry = CatalogueEntry(id: id, directory: dir, bannerURL: image(named: "banner", in: dir, fm), iconURL: image(named: "icon", in: dir, fm))
+        entry.coverURL = image(named: "cover", in: dir, fm)
         entry.readableName = lenientName(in: dir.appendingPathComponent("game.manifest.json"), fm)
         do {
             guard let data = fm.contents(atPath: dir.appendingPathComponent("game.manifest.json").path) else {
@@ -114,6 +118,7 @@ public enum GameCatalogue {
         let fallbackID = String(folder.dropLast(".framework".count))
         let manifestURL = fw.appendingPathComponent("game.manifest.json")
         var entry = CatalogueEntry(id: fallbackID, directory: fw, bannerURL: image(named: "banner", in: fw, fm), iconURL: image(named: "icon", in: fw, fm))
+        entry.coverURL = image(named: "cover", in: fw, fm)
         entry.readableName = lenientName(in: manifestURL, fm)
         do {
             guard let data = fm.contents(atPath: manifestURL.path) else {

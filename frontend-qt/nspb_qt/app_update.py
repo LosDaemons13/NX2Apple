@@ -25,6 +25,25 @@ APP_VERSION = '1.4.0'
 LATEST_RELEASE_URL = 'https://api.github.com/repos/LNPANDY/NX2Apple/releases/latest'
 RELEASES_PAGE_URL = 'https://github.com/LNPANDY/NX2Apple/releases/latest'
 
+
+def _fork_build(folder: Path = Path(__file__).resolve().parent) -> dict:
+    """`fork_build.json`, which a fork's workflow writes beside this file: the fork's repository and its build version."""
+    try:
+        data = json.loads((folder / 'fork_build.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# A fork's build updates from the fork's own releases, so an update from upstream never replaces it with a build
+# that lacks the fork's changes (the cartridge shell, for one).
+_FORK = _fork_build()
+if re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9._-]+', str(_FORK.get('repo') or '')):
+    LATEST_RELEASE_URL = f"https://api.github.com/repos/{_FORK['repo']}/releases/latest"
+    RELEASES_PAGE_URL = f"https://github.com/{_FORK['repo']}/releases/latest"
+if re.fullmatch(r'\d+(\.\d+)+', str(_FORK.get('version') or '')):
+    APP_VERSION = str(_FORK['version'])
+
 #: Accepted Windows release zip names, newest first.
 ASSET_NAMES = (
     'NX2Apple-windows-x64.zip',

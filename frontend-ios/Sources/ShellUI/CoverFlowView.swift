@@ -70,10 +70,9 @@ struct CoverFlowView: View, Equatable {
         let words = Self.infoHeight(short: short)
         let footer: CGFloat = short ? 36 : 56
         let bar = nativeBars ? 0 : Self.barTop(short: short) + Self.barHeight
-        // Use the same usable half-width in both inner-display poses; folding only changes the anchor.
-        let artworkWidth = short ? size.width * 0.64 : max(0, size.width / 2 - 48)
-        let cardHeight = max(90, min(artworkWidth * 9 / 16, height - words - gap - footer - bar - 32) / 1.06)
-        let cover = cardHeight * 16 / 9
+        // Game cases stand upright: as tall as the row allows, never so wide that fewer than three fit across.
+        let cardHeight = max(90, min(size.width * 0.3 / GameBoxArt.aspect, height - words - gap - footer - bar - 32) / 1.06)
+        let cover = cardHeight * GameBoxArt.aspect
         ZStack(alignment: .top) {
             VStack(spacing: gap) {
                 carousel(width: size.width, cover: cover, primaryWidth: primaryWidth)
@@ -198,9 +197,9 @@ struct CoverFlowView: View, Equatable {
             withAnimation(reduceMotion ? nil : .smooth(duration: 0.2)) { centredID = detail.id }
             select(detail.id)
         } label: {
-            CoverView(game: detail.game, radius: cover * 0.03, showsState: true)
-                .frame(width: cover, height: cover * 9 / 16)
-                .shadow(color: .black.opacity(0.5), radius: cover * 0.05, y: cover * 0.03)
+            GameBoxArt(game: detail.game, cornerRadius: cover * 0.045, showsState: true)
+                .frame(width: cover, height: cover / GameBoxArt.aspect)
+                .shadow(color: .black.opacity(0.55), radius: cover * 0.08, y: cover * 0.05)
         }
         .buttonStyle(.plain)
         // A long press on the centred card opens its settings, a shortcut for the button at the top.
@@ -253,9 +252,15 @@ struct CoverFlowView: View, Equatable {
     private func launchActions(width: CGFloat) -> some View {
         let game = selected.game
         return ZStack(alignment: divided ? .leading : .center) {
-                let actions = GameLaunchActions(game: game, primary: { primary(selected) }, settings: openSettings,
-                                                alignment: divided ? .leading : .center, transitionDuration: 0.18)
-                if obscured { actions.hidden() } else { actions }
+                if game.state == .playable {
+                    // A ready game starts from its case (a tap on the cover or A): under it, only where it sits in the row.
+                    PageDots(count: games.count, index: position - 1)
+                        .frame(maxWidth: .infinity, alignment: divided ? .leading : .center)
+                } else {
+                    let actions = GameLaunchActions(game: game, primary: { primary(selected) }, settings: openSettings,
+                                                    alignment: divided ? .leading : .center, transitionDuration: 0.18)
+                    if obscured { actions.hidden() } else { actions }
+                }
             }
             .frame(maxWidth: max(0, min(560, width - 48)))
             .padding(.horizontal, 24)
@@ -303,17 +308,19 @@ struct CoverFlowBackdrop: View {
     var body: some View {
         ZStack {
             ShellPalette.background
-            ArtView(game: game, backdrop: true)
-                .scaleEffect(1.3)
-                .blur(radius: 60, opaque: true)
-                .saturation(1.25)
-                .opacity(0.75)
+            // The key art itself fills the screen, softened rather than washed out, as a console's home screen shows it.
+            // Without a banner the small copy of the icon is blurred as before.
+            ArtView(game: game, backdrop: game.banner == nil)
+                .scaleEffect(1.08)
+                .blur(radius: game.banner == nil ? 60 : 9, opaque: true)
+                .saturation(1.1)
+                .opacity(0.9)
                 .id(game.id)
                 .transition(.opacity)
             // Darker toward the edges and the bottom, so the type and the covers keep their contrast.
-            RadialGradient(colors: [.clear, ShellPalette.background.opacity(0.75)], center: .init(x: 0.5, y: 0.4),
-                           startRadius: 80, endRadius: 900)
-            LinearGradient(colors: [.black.opacity(0.25), .clear, ShellPalette.background.opacity(0.85)],
+            RadialGradient(colors: [.clear, ShellPalette.background.opacity(0.6)], center: .init(x: 0.5, y: 0.4),
+                           startRadius: 120, endRadius: 900)
+            LinearGradient(colors: [.black.opacity(0.35), .clear, ShellPalette.background.opacity(0.8)],
                            startPoint: .top, endPoint: .bottom)
         }
         .animation(reduceMotion ? .linear(duration: 0.12) : .easeInOut(duration: 0.22).delay(0.04), value: game.id)

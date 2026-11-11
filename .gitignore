@@ -50,3 +50,4 @@ frontend/NX2Apple.app/
 # Local public artwork for the Nintendo screenshot demo.
 /frontend-ios/Demo/ReviewCatalog/*
 !/frontend-ios/Demo/ReviewCatalog/README.md
+frontend-qt/nspb_qt/fork_build.json

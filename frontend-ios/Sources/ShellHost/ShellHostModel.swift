@@ -310,10 +310,12 @@ public struct ShellHostConfig: Sendable {
         let data = data(for: entry)
         let state = GameStateResolver.state(for: entry, data: data, environment: config.environment)
         let played = lastPlayed(entry.id)
+        let stats = PlayStatsStore(defaults: config.defaults(entry.id))
         let tile = GameTile(id: entry.id, title: entry.title, subtitle: entry.manifest.map { ShellFormat.version($0.displayVersion) } ?? "",
                             banner: image(entry.bannerURL), icon: image(entry.iconURL), state: state,
                             recentlyPlayed: played.map { ShellFormat.played($0, now: config.now()) }, version: entry.manifest?.displayVersion ?? "",
-                            isSwitch2: entry.manifest?.console == "switch2")
+                            isSwitch2: entry.manifest?.console == "switch2",
+                            cover: image(entry.coverURL), playSeconds: stats.seconds, launches: stats.launches)
         guard let profile = profile(for: entry, data: data) else {
             return GameDetail(game: tile, dataNote: dataNote(data, found: false))
         }
@@ -574,8 +576,14 @@ public struct ShellHostConfig: Sendable {
             romfsURL: resolved.romfsURL, appFolder: appFolder(for: id), environment: launchEnvironment(profile: profile, id: id), cloudSavesURL: cloud)
         do {
             game.shaderResourcesURL = try await ShaderResources.shared.prepare(game)
+            // Counted from here: the game is about to take the process over (PlayStats.swift).
+            PlayStatsStore(defaults: config.defaults(id)).recordLaunch()
+            PlayClock.start(id: id, defaults: config.defaults)
             try await launcher.launch(game)
-        } catch { notice = error.localizedDescription }
+        } catch {
+            PlayClock.stop()
+            notice = error.localizedDescription
+        }
     }
 
     /// The right-stick hint's words: a few, no semicolon, short enough for the right third of a small phone.

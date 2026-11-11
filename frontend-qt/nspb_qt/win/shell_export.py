@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .. import covers
 from .. import platform_util as pu
 from . import fix_ipa_modes, macho_sign, toolchain as tc
 
@@ -506,11 +507,15 @@ def export_shell(
     if err is not None:
         return False, '', _t('shell.projectFailed', err), []
 
+    box_art = covers.covers_dir_beside(banners_dir)
     for g in library.games:
         picked = picked_artwork if g.title_id == tid_norm else None
         banner = place_banner(g.title_id, g.framework, banners_dir=banners_dir, picked=picked)
         if banner:
             log(f'banner: {g.title_id} {banner}\n')
+        cover = covers.place(g.title_id, g.framework, box_art)
+        if cover:
+            log(f'cover: {g.title_id} {cover}\n')
 
     try:
         library.save(root_p)

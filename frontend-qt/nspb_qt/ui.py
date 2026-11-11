@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -30,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import build_failure as bf
+from . import covers
 from . import features as feat
+from . import github_publish as ghp
 from . import inputs
 from . import library as lib
 from . import platform_util as pu
@@ -695,6 +699,13 @@ class MainWindow(QMainWindow):
             act_reset_art = menu.addAction(self.m.t('library.resetArtwork'))
             act_reset_art.triggered.connect(lambda: (self.m.artwork.clear_custom(g.title_id), self._refresh_library()))
 
+        # The front of the game's case on the iPhone (covers.py). It goes into the IPA at the next export or publish.
+        act_cover = menu.addAction(self.m.t('library.changeCover'))
+        act_cover.triggered.connect(lambda: self._pick_cover(g))
+        if covers.find(covers.covers_dir(self.m.artwork.state_dir), g.title_id):
+            act_reset_cover = menu.addAction(self.m.t('library.resetCover'))
+            act_reset_cover.triggered.connect(lambda: covers.clear(covers.covers_dir(self.m.artwork.state_dir), g.title_id))
+
         target_reveal = g.ipa_path if g.has_ipa else (g.archive_path if g.has_archive else ((g.inputs.get('base') or [''])[0]))
         if target_reveal and os.path.exists(target_reveal):
             act_reveal = menu.addAction(self.m.t('install.reveal'))
@@ -723,6 +734,20 @@ class MainWindow(QMainWindow):
         if f:
             self.m.artwork.set_custom(game.title_id, f)
             self._refresh_library()
+
+    def _pick_cover(self, game: lib.LibraryGame) -> None:
+        f, _ = QFileDialog.getOpenFileName(
+            self,
+            self.m.t('library.changeCover'),
+            '',
+            'Images (*.png *.jpg *.jpeg *.webp *.heic)',
+        )
+        if not f:
+            return
+        try:
+            covers.set_cover(covers.covers_dir(self.m.artwork.state_dir), game.title_id, f)
+        except (OSError, ValueError) as e:
+            self.m.log(f'cover: {e}\n')
 
     def _delete_game_dialog(self, game: lib.LibraryGame) -> None:
         dlg = DeleteGameDialog(self.m, game, self)
@@ -1115,7 +1140,22 @@ class MainWindow(QMainWindow):
         self.step2_sub.setWordWrap(True)
         s2_col.addWidget(self.step2_title)
         s2_col.addWidget(self.step2_sub)
+        # Publish to GitHub: the IPA in a release of the player's private repository, for a signing app on the iPhone.
+        self.publish_status = QLabel(self.m.t('github.publishNote'))
+        self.publish_status.setObjectName('muted')
+        self.publish_status.setWordWrap(True)
+        self.publish_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+        self.publish_status.setOpenExternalLinks(True)
+        s2_col.addWidget(self.publish_status)
         rs2_lay.addLayout(s2_col, 1)
+        self.publish_btn = QPushButton(self.m.t('github.publish'))
+        self.publish_btn.setObjectName('creamPill')
+        self.publish_btn.clicked.connect(self._publish_to_github)
+        rs2_lay.addWidget(self.publish_btn)
+        self._publish_job: dict | None = None
+        self._publish_timer = QTimer(self)
+        self._publish_timer.setInterval(250)
+        self._publish_timer.timeout.connect(self._poll_publish)
         grp.add_row(r_s2)
 
         # Step 3: Send game data to drive or folder (shown when shared app mode)
@@ -1216,6 +1256,10 @@ class MainWindow(QMainWindow):
         self.step1_reveal_btn.setVisible(has_ipa)
         self.step2_title.setText('②  ' + self.m.t('shell.step2Title'))
         self.step2_sub.setText(self.m.t('shell.oneGameStep2Sub' if one else 'shell.step2Sub'))
+        self.publish_btn.setText(self.m.t('github.publish'))
+        self.publish_btn.setEnabled(has_ipa and self._publish_job is None and not self.m.running)
+        if self._publish_job is None and not getattr(self, '_publish_said', ''):
+            self.publish_status.setText(self.m.t('github.publishNote'))
         self.step3_title.setText('③  ' + self.m.t('shell.step3Title') + ' · ' + self.m.t('shell.whereDrive'))
         self.drive_path_lbl.setText(self._drive_folder or self.m.t('shell.driveNone'))
         self.step3_open_romfs_btn.setText(self.m.t('shell.showInFinder'))
@@ -1250,6 +1294,108 @@ class MainWindow(QMainWindow):
             self.step3_sub.setText(self.m.t('shell.driveDone', info, self.m.t('ios.ui.gameData')))
         else:
             self.step3_sub.setText(self.m.t('shell.driveFailed', info))
+
+    # Publish to GitHub (github_publish.py)
+
+    def _say_publish(self, text: str, rich: bool = False) -> None:
+        self._publish_said = text
+        self.publish_status.setTextFormat(Qt.RichText if rich else Qt.PlainText)
+        self.publish_status.setText(text)
+
+    def _covers_newer_than(self, ipa_p: str) -> bool:
+        """A box art was picked, changed or removed since the shared IPA was packed: pack it again before sending it."""
+        if not pu.IS_WIN or self.m.ipa_kind != 'shared':
+            return False
+        from .win import shell_export as se
+        folder = covers.covers_dir(self.m.artwork.state_dir)
+        try:
+            packed = os.path.getmtime(ipa_p)
+        except OSError:
+            return False
+        for g in se.ShellLibrary.load(self.m.shell_cache_path).games:
+            source = covers.find(folder, g.title_id)
+            inside = covers.find_in_framework(g.framework)
+            if bool(source) != bool(inside):
+                return True
+            if source is not None and source.stat().st_mtime > packed:
+                return True
+        return False
+
+    def _publish_to_github(self) -> None:
+        if self._publish_job is not None or self.m.running:
+            return
+        ipa_p = self._effective_ipa_path()
+        if not ipa_p or not os.path.isfile(ipa_p):
+            self._say_publish(self.m.t('github.noIpa'))
+            return
+        state_dir = self.m.artwork.state_dir
+        saved = ghp.load_settings(state_dir)
+        repo, ok = QInputDialog.getText(self, self.m.t('github.repoTitle'), self.m.t('github.repoPrompt'),
+                                        QLineEdit.EchoMode.Normal, str(saved.get('repo') or ghp.DEFAULT_REPO_NAME))
+        repo = (repo or '').strip()
+        if not ok or not repo:
+            return
+        if ghp.parse_repo(repo) is None:
+            self._say_publish(self.m.t('github.failed', repo))
+            return
+        ghp.save_settings(state_dir, {**saved, 'repo': repo})
+
+        repack = self._covers_newer_than(ipa_p)
+        job: dict = {'phase': 'export' if repack else 'upload', 'sent': 0, 'total': 0, 'result': None, 'error': None}
+        root, engine = self.m.shell_cache_path, self.m.engine_path
+        python_exe, banners = self.m.python_path or '', self.m.artwork.banners_dir
+        custom = dict(self.m.artwork.custom_paths)
+        t = self.m.t
+
+        def work() -> None:
+            try:
+                games: list[str] = []
+                if self.m.ipa_kind == 'shared' and pu.IS_WIN:
+                    from .win import shell_export as se
+                    library = se.ShellLibrary.load(root)
+                    games = [g.name or g.title_id for g in library.games]
+                    first = next((g for g in library.games if os.path.isdir(g.framework)), None)
+                    if repack and first is not None:
+                        done, _out, msg, _notes = se.export_shell(
+                            root=root, repo=engine, framework=first.framework, title_id=first.title_id,
+                            name=first.name, python_exe=python_exe, banners_dir=banners,
+                            picked_artwork=custom.get(first.title_id.upper()), t_func=t)
+                        if not done:
+                            raise ghp.PublishError('', msg)
+                job['phase'] = 'upload'
+                job['result'] = ghp.publish(ipa_p, repo, games=games,
+                                            progress=lambda sent, total: job.update(sent=sent, total=total))
+            except ghp.PublishError as e:
+                job['error'] = t(e.key) if e.key else e.detail
+            except Exception as e:  # a thread must never take the window down
+                job['error'] = str(e) or type(e).__name__
+
+        self._publish_job = job
+        self.publish_btn.setEnabled(False)
+        self._poll_publish()
+        threading.Thread(target=work, name='publish-ipa', daemon=True).start()
+        self._publish_timer.start()
+
+    def _poll_publish(self) -> None:
+        job = self._publish_job
+        if job is None:
+            self._publish_timer.stop()
+            return
+        if job['error'] is not None or job['result'] is not None:
+            self._publish_timer.stop()
+            self._publish_job = None
+            if job['error'] is not None:
+                self._say_publish(self.m.t('github.failed', job['error']))
+            else:
+                link = job['result'].latest_url
+                self._say_publish(self.m.t('github.published', f'<a href="{link}">{link}</a>'), rich=True)
+            self._refresh_install_card()
+            return
+        if job['phase'] == 'export':
+            self._say_publish(self.m.t('github.publishing', self.m.t('shell.exportPackStage')))
+        else:
+            sent, total = job['sent'], job['total']
+            self._say_publish(self.m.t('github.publishing', f'{sent * 100 // total} %' if total else ''))
 
     def _build_action_card(self) -> CardGroup:
         grp = CardGroup()

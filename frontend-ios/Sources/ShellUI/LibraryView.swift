@@ -79,6 +79,9 @@ public struct LibraryView: View {
     /// True after a touch: the controller hints and the focus ring step back until the next controller or key press.
     @State var touchMode: Bool
     @State var gate = InputGate()
+    /// The game whose case is open in front of the library (LibraryView+Cartridge.swift), and the last controller command for it.
+    @State var caseGameID: String?
+    @State var caseCommand = CaseCommand()
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.dynamicTypeSize) var typeSize
 
@@ -124,6 +127,9 @@ public struct LibraryView: View {
                 #endif
             }
             .toolbar { libraryToolbar }
+            #if os(iOS)
+            .toolbarVisibility(caseGameID == nil ? .automatic : .hidden, for: .navigationBar)
+            #endif
         }
         .environment(\.shellNativeBars, true)
         .environment(\.shellFocus, focus)
@@ -145,8 +151,20 @@ public struct LibraryView: View {
                 } else if let selected {
                     library(selected, layout: layout, size: geometry.size, insets: insets)
                         .frame(width: width, height: geometry.size.height)
+                        .allowsHitTesting(!menuPresented && caseGameID == nil)
+                        .accessibilityHidden(menuPresented || caseGameID != nil)
+                }
+                if let caseDetail {
+                    GameCaseView(detail: caseDetail, command: caseCommand,
+                                 launch: { launchFromCase(caseDetail.id) },
+                                 info: { openCaseInfo(caseDetail.id) },
+                                 closed: { closedCase(caseDetail.id) })
+                        .id(caseDetail.id)
+                        .frame(width: width, height: geometry.size.height)
                         .allowsHitTesting(!menuPresented)
                         .accessibilityHidden(menuPresented)
+                        .transition(.opacity)
+                        .zIndex(2)
                 }
 
             }
@@ -195,6 +213,7 @@ public struct LibraryView: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: padMapping)
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: buttonTestOpen)
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: touchLayout != nil)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: caseGameID)
         .environment(\.shellPickChoice, { request in openChoice(request) })
         .environment(\.shellOpenPadMapping, { id in openPadMapping(id) })
         .environment(\.shellOpenButtonTest, { openButtonTest() })

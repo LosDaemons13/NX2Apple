@@ -54,7 +54,10 @@ extension LibraryView {
         if detail.game.state.needsHelp { openHelp(detail.id); return }
         let targetActions = settingsOpen ? menuActions : actions
         switch detail.game.state {
-        case .playable: targetActions.onPlay(detail.id)
+        case .playable:
+            // From the library a ready game opens its case first: the cartridge starts it (LibraryView+Cartridge.swift).
+            // Play in the game's settings starts it at once.
+            if fromSettings || settingsOpen { targetActions.onPlay(detail.id) } else { openCase(detail.id) }
         case .needsGameData: targetActions.onPickGameData(detail.id)
         case .needsAppUpdate: targetActions.onAppUpdate()
         case .broken: targetActions.onShowLog(detail.id)
@@ -204,6 +207,8 @@ extension LibraryView {
         if buttonTestOpen, case .controller = source { return }
         if device != source { device = source }
         if touchMode { touchMode = false }
+        // The open case takes A, B and X while nothing is over it.
+        if handleCase(action) { return }
         focus.visible = true
         // A control the editor holds: the D-pad (or the arrow keys) moves it, A or B puts it down.
         if let touchLayout, touchLayout.held, choice == nil {

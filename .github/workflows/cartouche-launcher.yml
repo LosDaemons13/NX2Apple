@@ -1,0 +1,324 @@
+# The cartridge fork's build: the iPhone shell with the game-case library (frontend-ios, built on GitHub's macOS runner
+# with Xcode 27.2) inside the Windows launcher (frontend-qt, PyInstaller on Windows), published as a release of this fork.
+#
+# Same steps as build-qt.yml, plus fork_build.json (the launcher then updates from this fork's releases, never from
+# upstream's) and a release named cartouche-v<version>. No game, key or IPA goes anywhere near this workflow: games are
+# built on the player's PC and the IPA goes to their own private repository from the launcher.
+#
+#   - a push to the cartouche branch, or Run workflow → build, then a release with NX2Apple-windows-x64.zip
+name: Build the cartridge launcher (Windows + iPhone shell)
+
+on:
+  push:
+    branches: [cartouche]
+    paths: ['frontend-ios/**', 'frontend-qt/**', 'frontend/l10n/**', 'patches/**', '.upstream-ref', 'tools/**', '.github/workflows/cartouche-launcher.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cartouche-launcher
+  cancel-in-progress: true
+
+jobs:
+  shell-template:
+    name: Build DmShell.app template (macOS)
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build unsigned DmShell.app template
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v xcodegen || brew install xcodegen
+          python3 tools/engine.py -q sync
+          python3 tools/build_shell_template.py --out "$RUNNER_TEMP/shell_template/DmShell.app"
+          du -sh "$RUNNER_TEMP/shell_template/DmShell.app"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dmshell-template
+          path: ${{ runner.temp }}/shell_template/DmShell.app
+          if-no-files-found: error
+
+  build:
+    needs: shell-template
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the DmShell.app template
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dmshell-template
+          path: frontend-qt/shell_template/DmShell.app
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PySide6 and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          # PySide6-Essentials only: no Addons, no Pdf, no WebEngine. The umbrella 'PySide6'
+          # package installs all of them (WebEngine alone is 250 MB) and PyInstaller's Qt hooks
+          # then copy every installed module regardless of --exclude-module — measured: a full
+          # install produced a 591 MB bundle with the same exclusions in place.
+          python -m pip install PySide6-Essentials pyinstaller
+
+      # The build packages ride in the zip: the venv step then installs from disk (--no-index),
+      # so a fresh machine needs no PyPI round-trip for lz4/capstone/fonttools/nsz. The runner's
+      # Python is the version these wheels target (3.12), matching the interpreter the app
+      # installs for its venv.
+      # Exact versions, wheels only: the zip ships these to players, so the supply is pinned
+      # (hash-locking the full closure can follow the Mac bundled-Python pattern if wanted).
+      - name: Download the venv wheels
+        run: "python -m pip download --only-binary=:all: lz4==4.4.5 capstone==5.0.9 unicorn==2.1.4 fonttools==4.68.0 zbic==1.0.1.post1 backports.zstd==1.8.0 nsz==5.0.0 -d frontend-qt/wheels"
+
+      - name: Build the engine tree
+        shell: bash
+        run: |
+          # The engine tree (upstream at the pin plus the patch series) goes into the zip beside
+          # the app, so a Windows player needs no git, no repository download and no sync. The
+          # Mac release does the same (build-mac-app.yml, the engine tree step).
+          python tools/engine.py -q sync
+          python tools/engine.py tree --out engine-tree
+          du -sh engine-tree
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish the extractor for the bundled Windows engine
+        shell: bash
+        run: |
+          # Use the patched sources that produced engine-tree. Keep obj/ and other build
+          # intermediates outside engine/ so only the published output goes into the Windows zip.
+          out=engine-tree/dm/tools/nx_extract_bin
+          cp frontend-qt/nx_extract/packages.lock.json engine/dm/tools/nx_extract/
+          dotnet publish engine/dm/tools/nx_extract -c Release --self-contained false -p:PublishAot=false -p:RestoreLockedMode=true --artifacts-path "$RUNNER_TEMP/nx_extract_artifacts" -o "$out"
+          cp frontend-qt/nx_extract/LibHac-LICENSE.txt "$out/"
+          "$out/nx_extract.exe" --source-sha
+
+          # Open a synthetic empty PFS0 through LibHac before packaging.
+          touch empty.keys
+          python -c "from pathlib import Path; Path('empty.nsp').write_bytes(b'PFS0' + bytes(256))"
+          "$out/nx_extract.exe" empty.keys --keys empty.nsp
+
+          # The engine tree ships a macOS Mach-O dmsh_xlate NativeAOT binary in dm/gfx/tools/dmsh_xlate_bin/.
+          # Publish the managed Windows assemblies alongside it so shim.py's `dotnet dmsh_xlate.dll` runs
+          # on Windows while tool_lock.py still sees the committed Mach-O binary's sha16 fingerprint.
+          dotnet publish engine/dm/gfx/tools/dmsh_xlate -c Release --self-contained false -p:PublishAot=false -p:SatelliteResourceLanguages=en --artifacts-path "$RUNNER_TEMP/dmsh_xlate_artifacts" -o "$RUNNER_TEMP/dmsh_xlate_out"
+          cp "$RUNNER_TEMP/dmsh_xlate_out"/*.dll "$RUNNER_TEMP/dmsh_xlate_out"/*.json "$RUNNER_TEMP/dmsh_xlate_out"/*.exe engine-tree/dm/gfx/tools/dmsh_xlate_bin/
+          dotnet engine-tree/dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll --source-sha
+
+      - name: Build Windows shader tools for the bundled engine
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The engine tree ships a macOS Mach-O spirv-cross binary in dm/gfx/tools/spirv_cross_bin/.
+          # Build the Windows executable from the exact commit build.sh pins, and bundle Khronos's
+          # standalone glslangValidator.exe alongside it so NVN, Vulkan and OpenGL shader builds
+          # all work out of the box without a manual Vulkan SDK install.
+          TAG=$(sed -n 's/^TAG=\([^ ]*\).*/\1/p' engine-tree/dm/gfx/tools/spirv_cross_bin/build.sh)
+          COMMIT=$(sed -n 's/^COMMIT=\([^ ]*\).*/\1/p' engine-tree/dm/gfx/tools/spirv_cross_bin/build.sh)
+          git clone --quiet --depth 1 --branch "$TAG" https://github.com/KhronosGroup/SPIRV-Cross.git spirv-cross-src
+          got=$(git -C spirv-cross-src rev-parse HEAD)
+          [ "$got" = "$COMMIT" ] || { echo "SPIRV-Cross $TAG is $got, expected $COMMIT" >&2; exit 1; }
+          cmake -S spirv-cross-src -B spirv-cross-build -DSPIRV_CROSS_ENABLE_TESTS=OFF -DSPIRV_CROSS_SKIP_INSTALL=ON
+          cmake --build spirv-cross-build --config Release --target spirv-cross --parallel
+          SPV_EXE=$(find spirv-cross-build -name "spirv-cross.exe" | head -1)
+          [ -n "$SPV_EXE" ] && [ -f "$SPV_EXE" ]
+          cp "$SPV_EXE" engine-tree/dm/gfx/tools/spirv_cross_bin/spirv-cross.exe
+          engine-tree/dm/gfx/tools/spirv_cross_bin/spirv-cross.exe --revision
+          rm -rf spirv-cross-src spirv-cross-build
+
+          GLSLANG_URL="https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip"
+          GLSLANG_SHA="82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b"
+          gh release download 16.6.0 -R KhronosGroup/glslang -p glslang-16.6.0-windows-x86_64-release.zip -O glslang.zip --clobber \
+            || curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$GLSLANG_URL" -o glslang.zip
+          got_sha=$(sha256sum glslang.zip | awk '{print $1}')
+          [ "$got_sha" = "$GLSLANG_SHA" ] || { echo "glslang.zip sha256 is $got_sha, expected $GLSLANG_SHA" >&2; exit 1; }
+          unzip -q glslang.zip bin/glslang.exe
+          cp bin/glslang.exe engine-tree/dm/gfx/tools/spirv_cross_bin/glslangValidator.exe
+          engine-tree/dm/gfx/tools/spirv_cross_bin/glslangValidator.exe --version
+          rm -rf glslang.zip bin
+
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          src=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" frontend-qt/nspb_qt/app_update.py)
+          v="${TAG#v}"
+          if [[ "$v" =~ ^(.+)-rc([1-9][0-9]*)$ ]]; then
+            base="${BASH_REMATCH[1]}"
+          else
+            base="$v"
+          fi
+          if [ "$base" != "$src" ]; then
+            echo "::error::tag says $base but APP_VERSION says $src: bump the source first"
+            exit 1
+          fi
+
+      - name: Fork build info
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          base=$(python -c "import re, pathlib; print(re.search(r\"^APP_VERSION = '([0-9.]+)'\", pathlib.Path('frontend-qt/nspb_qt/app_update.py').read_text(encoding='utf-8'), re.M).group(1))")
+          version="$base.$RUN"
+          python -c "import json, sys; json.dump({'repo': sys.argv[1], 'version': sys.argv[2]}, open('frontend-qt/nspb_qt/fork_build.json', 'w'))" "$REPO" "$version"
+          cat frontend-qt/nspb_qt/fork_build.json
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: frontend-qt
+        shell: bash
+        run: |
+          # Manrope (the Mac launcher's typeface, SIL OFL 1.1) goes into the bundle's fonts folder
+          # with its licence; style.load_font() looks for it there. The language files (frontend/l10n, the ones the
+          # Mac launcher reads too) go into the bundle's l10n folder; nspb_qt/l10n.py looks for them there.
+          PATHSEP=';'
+          # --windowed: no console window. --name: the exe/bundle name.
+          # --collect-all PySide6 copies the whole PySide6 package and OVERRIDES
+          # --exclude-module (measured: the package stayed 247 MB with 38 exclusions in
+          # place). Collect only the modules this app imports, plus the platform plugin
+          # directory a windowed build would otherwise miss.
+          pyinstaller --noconfirm --clean --windowed \
+            --name "NX2Apple" \
+            --icon "nspb_qt/assets/app_icon.ico" \
+            --collect-submodules PySide6.QtCore \
+            --collect-submodules PySide6.QtGui \
+            --collect-submodules PySide6.QtWidgets \
+            --collect-submodules nspb_qt \
+            --hidden-import nspb_qt.app_update \
+            --hidden-import nspb_qt.win.toolchain \
+            --hidden-import nspb_qt.win.fetch \
+            --hidden-import nspb_qt.win.sdk_fetch \
+            --hidden-import nspb_qt.win.driver \
+            --hidden-import nspb_qt.win.shim \
+            --hidden-import nspb_qt.win.mp_worker \
+            --hidden-import nspb_qt.win.build_app \
+            --hidden-import nspb_qt.win.shell_export \
+            --hidden-import nspb_qt.win.fix_ipa_modes \
+            --hidden-import nspb_qt.win.doctor \
+            --hidden-import nspb_qt.win.love_shaders \
+            --hidden-import nspb_qt.win.arm64_emu \
+            --hidden-import nspb_qt.win.oodle_emu \
+            --hidden-import nspb_qt.win.gm_shaders \
+            --hidden-import nspb_qt.win.nro_emu \
+            --hidden-import nspb_qt.win.glslc_emu \
+            --hidden-import nspb_qt.win.defender \
+            --collect-data PySide6 \
+            --hidden-import PySide6.QtCore \
+            --hidden-import PySide6.QtGui \
+            --hidden-import PySide6.QtWidgets \
+            --exclude-module PySide6.QtWebEngineCore \
+            --exclude-module PySide6.QtWebEngineWidgets \
+            --exclude-module PySide6.QtWebEngineQuick \
+            --exclude-module PySide6.QtWebChannel \
+            --exclude-module PySide6.QtWebSockets \
+            --exclude-module PySide6.QtQml \
+            --exclude-module PySide6.QtQuick \
+            --exclude-module PySide6.QtQuickWidgets \
+            --exclude-module PySide6.QtQuick3D \
+            --exclude-module PySide6.QtMultimedia \
+            --exclude-module PySide6.QtMultimediaWidgets \
+            --exclude-module PySide6.QtCharts \
+            --exclude-module PySide6.QtDataVisualization \
+            --exclude-module PySide6.Qt3DCore \
+            --exclude-module PySide6.Qt3DRender \
+            --exclude-module PySide6.Qt3DInput \
+            --exclude-module PySide6.Qt3DLogic \
+            --exclude-module PySide6.Qt3DAnimation \
+            --exclude-module PySide6.Qt3DExtras \
+            --exclude-module PySide6.QtBluetooth \
+            --exclude-module PySide6.QtNfc \
+            --exclude-module PySide6.QtPositioning \
+            --exclude-module PySide6.QtSerialPort \
+            --exclude-module PySide6.QtSql \
+            --exclude-module PySide6.QtTest \
+            --exclude-module PySide6.QtDesigner \
+            --exclude-module PySide6.QtHelp \
+            --exclude-module PySide6.QtPdf \
+            --exclude-module PySide6.QtPdfWidgets \
+            --exclude-module PySide6.QtSpatialAudio \
+            --exclude-module PySide6.QtTextToSpeech \
+            --exclude-module PySide6.QtUiTools \
+            --exclude-module PySide6.QtScxml \
+            --exclude-module PySide6.QtRemoteObjects \
+            --exclude-module PySide6.QtStateMachine \
+            --exclude-module PySide6.QtHttpServer \
+            --exclude-module PySide6.QtGraphs \
+            --exclude-module PySide6.QtGraphsWidgets \
+            --add-data "../frontend/fonts/Manrope.ttf${PATHSEP}fonts" \
+            --add-data "../frontend/fonts/Manrope-OFL.txt${PATHSEP}fonts" \
+            --add-data "../frontend/l10n${PATHSEP}l10n" \
+            --add-data "shell_template${PATHSEP}shell_template" \
+            --add-data "nspb_qt${PATHSEP}nspb_qt" \
+            --paths . \
+            run_gui.py
+
+
+      - name: Trim the bundle
+        shell: bash
+        run: |
+          # PyInstaller's Qt hooks copy libraries that shiboken links against even when the app
+          # never imports them. QtPdf, QtQuick and QtQml reference each other and nothing we use,
+          # so they go.
+          cd frontend-qt/dist
+          for drop in Qt6Pdf Qt6Quick Qt6QuickWidgets Qt6Qml Qt6QmlModels Qt6QmlWorkerScript Qt6VirtualKeyboard; do
+            rm -f "NX2Apple/$drop.dll" 2>/dev/null || true
+          done
+          du -sh "NX2Apple" 2>/dev/null || true
+
+      - name: Package
+        shell: bash
+        run: |
+          cd frontend-qt/dist
+          cp -r ../wheels "NX2Apple/wheels"
+          # The engine tree goes inside the app folder, where the launcher finds it at
+          # <exe_dir>/engine (and also at <exe_dir>/../engine) and skips the repo/sync route entirely.
+          cp -r ../../engine-tree "NX2Apple/engine"
+          NSPB_PACKAGED_BUNDLE_DIR="$PWD/NX2Apple/_internal" \
+          NSPB_ENGINE_DIR="$PWD/NX2Apple/engine" \
+          QT_QPA_PLATFORM=offscreen \
+            python -m unittest discover -s ../tests -p "test_swift_parity.py" -v
+          powershell -Command "Compress-Archive -Path 'NX2Apple' -DestinationPath '../NX2Apple-windows-x64.zip'"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NX2Apple-windows-x64
+          path: frontend-qt/NX2Apple-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish the launcher as a release of this fork
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="cartouche-v$VERSION"
+          cat > notes.md <<NOTES
+          Windows launcher with the iPhone game-case library (NX2Apple $VERSION, commit ${SHA:0:12}).
+
+          1. Unzip NX2Apple-windows-x64.zip and run NX2Apple.exe.
+          2. Build your games (your own dumps and prod.keys). Right-click a game in the library to choose its box art.
+          3. Publish to GitHub sends NX2Apple.ipa to your PRIVATE repository. Install it on the iPhone with your signing app.
+          4. Copy each game's romfs.img to the app (Files app, Documents/games/<title ID>/).
+          NOTES
+          gh release create "$tag" frontend-qt/NX2Apple-windows-x64.zip \
+            --target "$SHA" --title "Cartridge launcher $VERSION" --notes-file notes.md --latest
