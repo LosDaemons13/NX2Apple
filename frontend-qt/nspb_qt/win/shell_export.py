@@ -22,6 +22,7 @@ from typing import Callable
 
 from .. import covers
 from .. import platform_util as pu
+from .. import version_support
 from . import fix_ipa_modes, macho_sign, toolchain as tc
 
 IPA_NAME = 'NX2Apple.ipa'
@@ -509,6 +510,10 @@ def export_shell(
 
     box_art = covers.covers_dir_beside(banners_dir)
     for g in library.games:
+        # the iPhone asks before Play when a game was built from a version its profile was not brought up on
+        if version_support.annotate_manifest(g.framework, repo_p) is False:
+            log(f'version: {g.title_id} was built from a version its profile does not register; '
+                'the iPhone asks before starting it\n')
         picked = picked_artwork if g.title_id == tid_norm else None
         banner = place_banner(g.title_id, g.framework, banners_dir=banners_dir, picked=picked)
         if banner:

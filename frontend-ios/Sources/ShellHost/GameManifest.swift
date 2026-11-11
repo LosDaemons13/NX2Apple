@@ -30,6 +30,11 @@ public struct GameManifest: Decodable, Equatable, Sendable {
     public var console: String?
     public var builtAt: String?
     public var bytes: Int?
+    /// False when the game was built from a version its engine profile was not brought up on: the Windows launcher writes it
+    /// at export (nspb_qt/version_support.py). Such a game often stops at start, so Play asks first. Nil when nothing is known.
+    public var versionSupported: Bool?
+    /// The display versions the profile was brought up on ("1.4.1"), from the same place.
+    public var supportedVersions: [String]?
 
     public static let supportedSchema = 1
 
@@ -39,6 +44,7 @@ public struct GameManifest: Decodable, Equatable, Sendable {
         case nroCount = "nro_count", frameworkExecutable = "framework_executable", imageMarker = "image_marker"
         case shaderMap = "shader_map", romfsMarker = "romfs_marker", romfsIdentity = "romfs_identity", minOS = "min_os"
         case builtBy = "built_by", builtAt = "built_at", console
+        case versionSupported = "version_supported", supportedVersions = "supported_versions"
     }
 
     /// Decodes and validates. A problem carries a readable reason for the broken state.

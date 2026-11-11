@@ -34,6 +34,12 @@ public struct ShellHostView: View {
             .alert(Text(verbatim: hostText("Shell")), isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
                 Button(hostText("OK")) { model.notice = nil }
             } message: { Text(model.notice ?? "") }
+            .alert(Text(verbatim: hostText("Version not supported")),
+                   isPresented: Binding(get: { model.versionWarning != nil }, set: { if !$0 { model.versionWarning = nil } }),
+                   presenting: model.versionWarning) { warning in
+                Button(hostText("Play anyway"), role: .destructive) { model.playDespiteVersion(warning.id) }
+                Button(hostText("Cancel"), role: .cancel) { model.versionWarning = nil }
+            } message: { warning in Text(verbatim: warning.message) }
             .onAppear { model.startControllers() }
             .onDisappear { model.stopControllers() }
     }

@@ -2362,6 +2362,53 @@ class Model(QObject):
             return self.failure.title_ids
         return ()
 
+    def planned_version(self, title_id: str | None = None) -> tuple[str, int | None] | None:
+        """(base title ID, package version) the next build would use, as start_build stages its inputs.
+
+        The version is the newest update's (the chosen one, else the newest beside the base game, as start_build adds
+        it), 0 for a base game alone, None when a name does not say it or the base is a cartridge image (an .xci can
+        carry its update inside). None overall when the title ID is not known.
+        """
+        folder = self.game_folder
+        if folder is not None:
+            if not folder.has_title_id:
+                return None
+            newest = folder.newest_update
+            return folder.title_id_hex, (newest[0] if newest else 0)
+        if not self.base_path:
+            return None
+        base_tid = int(title_id, 16) if title_id else inputs.title_id(Path(self.base_path).name)
+        if base_tid is None:
+            return None
+        app = base_tid & ~0xFFF
+        tid_hex = f'{app:016X}'
+        if self.update_path:
+            v = inputs.update_version(Path(self.update_path).name)
+            return tid_hex, (v or None)
+        base_dir = Path(self.base_path).parent
+        try:
+            names = [n for n in os.listdir(base_dir)
+                     if not n.startswith('._') and Path(n).suffix.lower() in inputs.GAME_SUFFIXES]
+        except OSError:
+            names = []
+        updates = [n for n in names
+                   if (t := inputs.title_id(n)) is not None and inputs.owner(t) == app and t & 0xFFF == 0x800]
+        if updates:
+            best = max(updates, key=lambda n: (inputs.update_version(n), n))
+            return tid_hex, (inputs.update_version(best) or None)
+        if Path(self.base_path).suffix.lower() in ('.xci', '.xcz'):
+            return tid_hex, None
+        return tid_hex, 0
+
+    def unsupported_version(self, title_id: str | None = None):
+        """The version_support.Mismatch of the next build, None when it fits or nothing is known."""
+        from . import version_support
+        planned = self.planned_version(title_id)
+        engine_dir = self.engine_path if self.repo_path else ''
+        if planned is None or not engine_dir:
+            return None
+        return version_support.check(engine_dir, planned[0], planned[1])
+
     def start_build(self, *, title_id: str | None = None) -> None:
         if self.running or (title_id is not None and title_id not in self.selectable_titles):
             return

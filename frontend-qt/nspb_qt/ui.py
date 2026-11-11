@@ -2963,11 +2963,38 @@ class MainWindow(QMainWindow):
         dlg.exec()
         return dlg.choice
 
-    def _build_clicked(self, *, title_id: str | None = None, skip_defender_prompt: bool = False) -> None:
+    def _confirm_unsupported_version(self, mismatch) -> bool:
+        """Ask before building a version the game's profile was not brought up on. True to build anyway."""
+        t = self.m.t
+        name = lib.GameFolder.profile_name(mismatch.title_id, self.m.engine_path) or mismatch.title_id
+        supported = ', '.join(mismatch.supported)
+        have = t('build.version.base') if mismatch.have == 0 else t('build.version.update', f'v{mismatch.have}')
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(t('build.version.title'))
+        box.setText(t('build.version.title'))
+        box.setInformativeText(t('build.version.body', name, supported, have))
+        anyway = box.addButton(t('build.version.anyway'), QMessageBox.AcceptRole)
+        cancel = box.addButton(t('build.version.cancel'), QMessageBox.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is anyway
+
+    def _build_clicked(self, *, title_id: str | None = None, skip_defender_prompt: bool = False,
+                       version_confirmed: bool = False) -> None:
         if self.m.running:
             if title_id is None:
                 self.m.cancel_build()
             return
+        if not version_confirmed:
+            check = getattr(self.m, 'unsupported_version', None)
+            mismatch = check(title_id) if callable(check) else None
+            if mismatch is not None:
+                self.m.log(f'version: {mismatch.title_id} v{mismatch.have} is not a version its profile was brought up on '
+                           f'({", ".join(mismatch.supported)})\n')
+                if not self._confirm_unsupported_version(mismatch):
+                    return
+            version_confirmed = True
         should_prompt_fn = getattr(self.m, 'should_prompt_defender_before_build', None)
         if not skip_defender_prompt and callable(should_prompt_fn) and should_prompt_fn(title_id=title_id):
             choice = self._prompt_defender_before_build(title_id=title_id)
@@ -2978,7 +3005,8 @@ class MainWindow(QMainWindow):
                 self.m.apply_defender_exclusions(
                     title_id=title_id,
                     on_done=lambda _ok, cancelled, _msg: (
-                        self._build_clicked(title_id=title_id, skip_defender_prompt=True)
+                        self._build_clicked(title_id=title_id, skip_defender_prompt=True,
+                                            version_confirmed=version_confirmed)
                         if not cancelled else None
                     ),
                 )

@@ -833,6 +833,70 @@
         }
       }
     },
+    "%@ was built from version %@, but it only runs in version %@. It will most likely crash at start. Build it again on the PC with update %@.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ wurde aus Version %@ erstellt, läuft aber nur in Version %@. Es stürzt sehr wahrscheinlich beim Start ab. Erstelle es auf dem PC mit dem Update %@ neu."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ was built from version %@, but it only runs in version %@. It will most likely crash at start. Build it again on the PC with update %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ se compiló a partir de la versión %@, pero solo funciona en la versión %@. Lo más probable es que se cierre al iniciar. Vuelve a compilarlo en el PC con la actualización %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ a été compilé depuis la version %@, mais il ne tourne qu’en version %@. Il va très probablement planter au démarrage. Recompilez-le sur le PC avec la mise à jour %@."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ è stato compilato dalla versione %@, ma funziona solo nella versione %@. Molto probabilmente si chiuderà all’avvio. Ricompilalo sul PC con l’aggiornamento %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ はバージョン %@ からビルドされていますが、動作するのはバージョン %@ のみです。起動時にクラッシュする可能性が高いです。PC でアップデート %@ を使って再ビルドしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@은(는) 버전 %@에서 빌드되었지만 버전 %@에서만 실행됩니다. 시작할 때 충돌할 가능성이 높습니다. PC에서 %@ 업데이트로 다시 빌드하세요."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ foi compilado a partir da versão %@, mas só roda na versão %@. É muito provável que feche ao iniciar. Compile-o de novo no PC com a atualização %@."
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ byggdes från version %@, men körs bara i version %@. Det kraschar troligen vid start. Bygg om det på datorn med uppdatering %@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 是用版本 %@ 构建的，但它只能在版本 %@ 中运行。启动时很可能会崩溃。请在电脑上用 %@ 更新重新构建。"
+          }
+        }
+      }
+    },
     "%lld additional content packs": {
       "localizations": {
         "de": {
@@ -2429,6 +2493,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "仅显示日志末尾部分。"
+          }
+        }
+      }
+    },
+    "Play anyway": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trotzdem starten"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play anyway"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jugar de todos modos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lancer quand même"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gioca comunque"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "それでもプレイ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "그래도 플레이"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jogar mesmo assim"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spela ändå"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍然开始游戏"
           }
         }
       }
@@ -4605,6 +4733,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "未保存的进度将会丢失。App 会关闭，再次打开即可回到你的游戏。"
+          }
+        }
+      }
+    },
+    "Version not supported": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version nicht unterstützt"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version not supported"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versión no compatible"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version non prise en charge"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versione non supportata"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サポートされていないバージョン"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "지원되지 않는 버전"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versão não compatível"
+          }
+        },
+        "sv": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Versionen stöds inte"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不支持的版本"
           }
         }
       }

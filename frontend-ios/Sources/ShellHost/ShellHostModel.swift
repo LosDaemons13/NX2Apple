@@ -55,6 +55,8 @@ public struct ShellHostConfig: Sendable {
     public private(set) var input = ShellInputLog()
     /// A short message the host view shows as an alert.
     public var notice: String?
+    /// A Play held back until the player answers: the game was built from a version its profile was not brought up on.
+    public var versionWarning: VersionWarning?
     /// The log the host view shows in a read-only sheet.
     public var log: LogPresentation?
     /// Play is preparing the game's resources or handing over to the engine.
@@ -551,9 +553,19 @@ public struct ShellHostConfig: Sendable {
         Task { await playNow(id) }
     }
 
-    func playNow(_ id: String) async {
+    /// Play after the version warning: the player chose to start the game anyway.
+    public func playDespiteVersion(_ id: String) {
+        versionWarning = nil
+        Task { await playNow(id, versionConfirmed: true) }
+    }
+
+    func playNow(_ id: String, versionConfirmed: Bool = false) async {
         guard !launchingGame, let entry = entry(id), let manifest = entry.manifest, let framework = entry.frameworkURL,
               details.first(where: { $0.id == id })?.game.state == .playable else { return }
+        if !versionConfirmed, let warning = VersionWarning.make(id: id, name: entry.title, manifest: manifest) {
+            versionWarning = warning
+            return
+        }
         launchingGame = true
         defer { launchingGame = false }
         forgetCheckedRomfsImages()
