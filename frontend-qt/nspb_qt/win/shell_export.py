@@ -420,6 +420,29 @@ def _prepare_fonts(staged_app: Path, repo: Path, python_exe: str) -> None:
             raise RuntimeError(f'make_ext_font.py failed: {r.stderr or r.stdout}')
 
 
+def shell_template_id(app: str | os.PathLike) -> str:
+    """The shell executable as the launcher ships it, hashed: each exported IPA records it (DMShellTemplate), so the
+    launcher can tell an IPA exported by an older version of itself, whose iPhone app lacks what this one has."""
+    import hashlib
+    h = hashlib.sha1()
+    with open(Path(app) / SCHEME, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def ipa_template_id(ipa: str | os.PathLike) -> str | None:
+    """The DMShellTemplate an IPA was exported with, None for one exported before it was recorded."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(ipa) as z:
+            info = plistlib.loads(z.read(f'Payload/{APP_NAME}/Info.plist'))
+    except (OSError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException, ValueError):
+        return None
+    v = info.get('DMShellTemplate')
+    return v if isinstance(v, str) else None
+
+
 def _update_shell_plist(staged_app: Path, bundle_id: str, repo: Path) -> None:
     plist_p = staged_app / 'Info.plist'
     with open(plist_p, 'rb') as f:
@@ -433,6 +456,8 @@ def _update_shell_plist(staged_app: Path, bundle_id: str, repo: Path) -> None:
     if commit:
         info['DMCommit'] = commit
     info['DMForkPatches'] = _dm_fork_patches(repo)
+    if (staged_app / SCHEME).is_file():
+        info['DMShellTemplate'] = shell_template_id(staged_app)   # before macho_sign changes the executable
     # "Receive from PC" fetches the games' data from this launcher on the home Wi-Fi (wifi_share.py, PCTransfer.swift):
     # iOS lets an app reach the local network only when it says why (else the requests fail without a prompt), and a
     # plain http address on the local network needs ATS's local exception.

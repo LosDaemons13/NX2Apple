@@ -133,6 +133,27 @@ class WifiShareTests(unittest.TestCase):
         self.assertIs(info['NSAppTransportSecurity']['NSAllowsLocalNetworking'], True)
         self.assertEqual(info['NSAppTransportSecurity']['NSExceptionDomains'], {}, 'what the template had stays')
 
+    def test_an_ipa_says_which_iphone_app_it_carries(self):
+        """An IPA exported by an older launcher has an older iPhone app (no Receive from PC): the window offers to make it again."""
+        import plistlib
+        import zipfile
+        from nspb_qt.win import shell_export as se
+        app = self.tmp / 'DmShell.app'
+        app.mkdir()
+        (app / 'DmShell').write_bytes(b'\xcf\xfa\xed\xfe shell v2')
+        with open(app / 'Info.plist', 'wb') as f:
+            plistlib.dump({'CFBundleIdentifier': 'x'}, f)
+        se._update_shell_plist(app, 'org.nxnative.shell', self.tmp / 'engine')
+        ipa = self.tmp / 'new.ipa'
+        with zipfile.ZipFile(ipa, 'w') as z:
+            z.write(app / 'Info.plist', 'Payload/DmShell.app/Info.plist')
+        self.assertEqual(se.ipa_template_id(ipa), se.shell_template_id(app))
+        old = self.tmp / 'old.ipa'
+        with zipfile.ZipFile(old, 'w') as z:
+            z.writestr('Payload/DmShell.app/Info.plist', plistlib.dumps({'CFBundleIdentifier': 'x'}))
+        self.assertIsNone(se.ipa_template_id(old), 'exported before the id was recorded')
+        self.assertIsNone(se.ipa_template_id(self.tmp / 'missing.ipa'))
+
     def test_addresses_are_local_ipv4(self):
         for a in ws.local_addresses():
             self.assertRegex(a, r'^\d+\.\d+\.\d+\.\d+$')
