@@ -16,6 +16,7 @@ import base64
 import json
 import ntpath
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -546,6 +547,8 @@ def build_inner_elevation_script(payload_json_path: str) -> str:
     escaped_payload = str(payload_json_path).replace("'", "''")
     return (
         "$ErrorActionPreference = 'Stop'\n"
+        # No progress records: on stderr they arrive as a #< CLIXML block, which says nothing to the player.
+        "$ProgressPreference = 'SilentlyContinue'\n"
         f"$payloadPath = '{escaped_payload}'\n"
         f"$batchSize = {WMI_BATCH_SIZE}\n"
         "$cfg = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8 | ConvertFrom-Json\n"
@@ -586,6 +589,8 @@ def build_inner_removal_script(payload_json_path: str) -> str:
     escaped_payload = str(payload_json_path).replace("'", "''")
     return (
         "$ErrorActionPreference = 'Stop'\n"
+        # No progress records: on stderr they arrive as a #< CLIXML block, which says nothing to the player.
+        "$ProgressPreference = 'SilentlyContinue'\n"
         f"$payloadPath = '{escaped_payload}'\n"
         f"$batchSize = {WMI_BATCH_SIZE}\n"
         "$cfg = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8 | ConvertFrom-Json\n"
@@ -661,6 +666,8 @@ def build_outer_launcher_script(inner_encoded_command: str) -> str:
     safe_b64 = str(inner_encoded_command).replace("'", '')
     return (
         "$ErrorActionPreference = 'Stop'\n"
+        # No progress records: on stderr they arrive as a #< CLIXML block, which says nothing to the player.
+        "$ProgressPreference = 'SilentlyContinue'\n"
         "try {\n"
         "    $argList = @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', "
         f"'-ExecutionPolicy', 'Bypass', '-EncodedCommand', '{safe_b64}')\n"
@@ -681,6 +688,46 @@ def build_outer_launcher_script(inner_encoded_command: str) -> str:
     )
 
 
+def _exchange_dir(base: Path, prefix: str) -> str:
+    """A new folder that keeps its parent's permissions, for the files the elevated PowerShell shares with the app.
+
+    Not `tempfile.mkdtemp`: since Python 3.12.4 it creates the folder on Windows with an ACL for SYSTEM, Administrators
+    and the owner only. The elevated PowerShell's result.json then belongs to Administrators, the app (not elevated)
+    cannot read it, and a successful update was reported as a failure whose only text was PowerShell's progress record
+    (`#< CLIXML`). A plain folder under the user's own profile inherits the profile's ACL (the user, Administrators,
+    SYSTEM), so the file stays readable and no other account gains access.
+    """
+    base.mkdir(parents=True, exist_ok=True)
+    for _ in range(100):
+        candidate = base / f'{prefix}{os.urandom(5).hex()}'
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return str(candidate)
+    raise FileExistsError(f'no free folder name under {base}')
+
+
+_CLIXML_RE = re.compile(r'#< CLIXML\s*<Objs\b.*?</Objs>', re.S)
+_CLIXML_ERROR_RE = re.compile(r'<S S="Error">(.*?)</S>', re.S)
+
+
+def clean_powershell_stderr(text: str) -> str:
+    """PowerShell's stderr without its serialized progress records (`#< CLIXML <Objs>…`). Error records in such a
+    block are kept as plain text, everything else in it is dropped."""
+    if not text:
+        return ''
+    errors: list[str] = []
+    for block in _CLIXML_RE.findall(text):
+        for part in _CLIXML_ERROR_RE.findall(block):
+            line = part.replace('_x000D_', '').replace('_x000A_', ' ').strip()
+            line = line.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&apos;', "'").replace('&amp;', '&')
+            if line:
+                errors.append(line)
+    rest = _CLIXML_RE.sub('', text).strip()
+    return '\n'.join([*errors, rest] if rest else errors).strip()
+
+
 def _run_elevated_payload(
     clean_paths: list[str],
     clean_procs: list[str],
@@ -690,10 +737,9 @@ def _run_elevated_payload(
 ) -> DefenderResult:
     base_dir = app_data_root()
     try:
-        base_dir.mkdir(parents=True, exist_ok=True)
-        work_td = tempfile.mkdtemp(prefix='defender-', dir=str(base_dir))
+        work_td = _exchange_dir(base_dir, 'defender-')
     except OSError:
-        work_td = tempfile.mkdtemp(prefix='nspb-defender-')
+        work_td = _exchange_dir(Path(tempfile.gettempdir()), 'nspb-defender-')
 
     payload_file = Path(work_td) / 'payload.json'
     result_file = Path(work_td) / 'result.json'
@@ -753,10 +799,15 @@ def _run_elevated_payload(
             )
 
         if result_file.is_file():
+            unreadable = ''
             try:
                 res_obj = json.loads(result_file.read_text(encoding='utf-8-sig'))
-            except (OSError, ValueError):
+            except OSError as e:
                 res_obj = {}
+                unreadable = f'the elevated result could not be read ({e.strerror or type(e).__name__}): {result_file}'
+            except ValueError:
+                res_obj = {}
+                unreadable = f'the elevated result is not valid JSON: {result_file}'
             rem_paths = (
                 [str(x) for x in res_obj.get('remaining_paths', ()) if x]
                 if isinstance(res_obj, dict) and isinstance(res_obj.get('remaining_paths'), list)
@@ -776,17 +827,17 @@ def _run_elevated_payload(
                     remaining_processes=rem_procs,
                 )
             err_msg = str(res_obj.get('error') or '').strip() if isinstance(res_obj, dict) else ''
-            stderr = (proc.stderr or proc.stdout or '').strip()
+            stderr = clean_powershell_stderr(proc.stderr or proc.stdout or '')
             return DefenderResult(
                 ok=False,
                 added_paths=clean_paths,
                 added_processes=clean_procs,
                 remaining_paths=rem_paths,
                 remaining_processes=rem_procs,
-                error=err_msg or stderr or f'exit code {proc.returncode}',
+                error=err_msg or unreadable or stderr or f'exit code {proc.returncode}',
             )
 
-        stderr = (proc.stderr or proc.stdout or '').strip()
+        stderr = clean_powershell_stderr(proc.stderr or proc.stdout or '')
         return DefenderResult(
             ok=False,
             added_paths=clean_paths,

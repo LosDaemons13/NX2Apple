@@ -6537,6 +6537,76 @@ class WindowsDefenderExclusionsTest(unittest.TestCase):
                 st_removed, _, _ = d.exclusions_status(games_folder=tricky_dir)
                 self.assertEqual(st_removed, 'needed')
 
+    # The progress record Windows PowerShell 5.1 wrote on stderr (French Windows), which the app showed as the error.
+    _PROGRESS_CLIXML = (
+        '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+        '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T><T>System.Object</T>'
+        '</TN><MS><I64 N="SourceId">1</I64><PR N="Record"><AV>Préparation des modules à la première utilisation.</AV>'
+        '<AI>0</AI><Nil /><PI>-1</PI><PC>-1</PC><T>Completed</T><SR>-1</SR><SD> </SD></PR></MS></Obj></Objs>'
+    )
+
+    def test_elevated_result_stays_readable_and_progress_is_not_an_error(self) -> None:
+        """Python 3.12.4+ gives a mkdtemp folder an ACL without the user: result.json written there by the elevated
+        PowerShell belonged to Administrators, the app could not read it, and a success showed as a #< CLIXML failure."""
+        import base64
+        import re
+        import tempfile as tf
+        d = self.defender
+
+        self.assertEqual(d.clean_powershell_stderr(self._PROGRESS_CLIXML), '')
+        with_error = self._PROGRESS_CLIXML.replace(
+            '</Objs>', '<S S="Error">Access denied_x000D__x000A_</S></Objs>')
+        self.assertEqual(d.clean_powershell_stderr(with_error + '\r\nplain line'), 'Access denied\nplain line')
+
+        def payload_of(cmd: list[str]) -> dict:
+            outer_ps = base64.b64decode(cmd[cmd.index('-EncodedCommand') + 1]).decode('utf-16-le')
+            inner_ps = base64.b64decode(re.search(r"'-EncodedCommand',\s*'([A-Za-z0-9+/=]+)'", outer_ps).group(1)).decode('utf-16-le')
+            for script in (outer_ps, inner_ps):
+                self.assertIn("$ProgressPreference = 'SilentlyContinue'", script)
+            path = Path(re.search(r"\$payloadPath = '([^']+(?:''[^']+)*)'", inner_ps).group(1).replace("''", "'"))
+            return json.loads(path.read_text(encoding='utf-8'))
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_tools = Path(td) / 'NS Port Builder' / 'tools'
+            fake_tools.mkdir(parents=True)
+            with mock.patch.object(tc, 'tools_dir', return_value=fake_tools), \
+                    mock.patch.object(tf, 'mkdtemp', side_effect=AssertionError('mkdtemp makes result.json unreadable')):
+                folders, procs = d.collect_exclusions(games_folder=r'D:\Games')
+
+                def runner_ok(cmd, **_kw):
+                    result = Path(payload_of(cmd)['result_path'])
+                    self.assertEqual(result.parent.parent, fake_tools.parent)
+                    result.write_text(json.dumps({'ok': True, 'error': ''}), encoding='utf-8-sig')
+                    return subprocess.CompletedProcess(cmd, 0, '', self._PROGRESS_CLIXML)
+
+                self.assertTrue(d.apply_exclusions(folders, procs, runner=runner_ok).ok)
+                d.clear_recorded_state()
+
+                def runner_unreadable(cmd, **_kw):
+                    Path(payload_of(cmd)['result_path']).write_text('{"ok": true}', encoding='utf-8')
+                    return subprocess.CompletedProcess(cmd, 0, '', self._PROGRESS_CLIXML)
+
+                real_read_text = Path.read_text
+
+                def read_text(path, *a, **kw):
+                    if path.name == 'result.json':
+                        raise PermissionError(13, 'Permission denied')
+                    return real_read_text(path, *a, **kw)
+
+                with mock.patch.object(Path, 'read_text', read_text):
+                    res = d.apply_exclusions(folders, procs, runner=runner_unreadable)
+                self.assertFalse(res.ok)
+                self.assertIn('could not be read', res.error)
+                self.assertNotIn('CLIXML', res.error)
+
+                def runner_no_result(cmd, **_kw):
+                    payload_of(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, '', self._PROGRESS_CLIXML)
+
+                res = d.apply_exclusions(folders, procs, runner=runner_no_result)
+                self.assertIn('without writing result.json', res.error)
+                self.assertNotIn('CLIXML', res.error)
+
     def test_model_defender_generation_guard_and_all_seven_languages(self) -> None:
         import ast
         from nspb_qt.i18n import Lang
