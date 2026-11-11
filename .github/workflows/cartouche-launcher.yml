@@ -46,6 +46,7 @@ jobs:
           name: dmshell-template
           path: ${{ runner.temp }}/shell_template/DmShell.app
           if-no-files-found: error
+          retention-days: 3   # only the next job reads it
 
   build:
     needs: shell-template
@@ -298,11 +299,15 @@ jobs:
             python -m unittest discover -s ../tests -p "test_swift_parity.py" -v
           powershell -Command "Compress-Archive -Path 'NX2Apple' -DestinationPath '../NX2Apple-windows-x64.zip'"
 
+      # A copy for the run page only: the release below is where the zip lives. A GitHub server error here (it happened)
+      # used to skip the release; now it does not.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        continue-on-error: true
         with:
           name: NX2Apple-windows-x64
           path: frontend-qt/NX2Apple-windows-x64.zip
           if-no-files-found: error
+          retention-days: 3
 
       - name: Publish the launcher as a release of this fork
         shell: bash
