@@ -2847,6 +2847,37 @@ class WindowsBuildFixesTest(unittest.TestCase):
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_the_shader_table_tools_use_processes_and_other_pools_keep_threads(self) -> None:
+        """cb_extent.py and c1_guard.py are pure-Python regex work over every shader: on threads (the shim's Pool) they ran on one core,
+        and Ocarina of Time's build sat at "compiling 99%" for over 20 minutes. Their Pool now spawns processes; the order stays."""
+        script = (
+            "import multiprocessing, os\n"
+            "def row(i): return (i, os.getpid())\n"
+            "def unproven(i): return (i, os.getpid())\n"
+            "def main():\n"
+            "    fn = row if os.path.basename(__file__) == 'cb_extent.py' else unproven\n"
+            "    with multiprocessing.Pool() as pool:\n"
+            "        out = list(pool.imap(fn, range(300), chunksize=8)) + pool.map(fn, range(300, 310))\n"
+            "    pids = {p for _, p in out}\n"
+            "    print('order', [i for i, _ in out] == list(range(310)), 'processes', os.getpid() not in pids)\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            sd = Path(td) / 'shim'
+            shim.install(sd)
+            sc = (sd / 'sitecustomize.py').read_text(encoding='utf-8').replace("if os.name == 'nt'", "if True", 1)
+            (sd / 'sitecustomize.py').write_text(sc, encoding='utf-8')
+            got = {}
+            for name in ('cb_extent.py', 'other_tool.py'):
+                (Path(td) / name).write_text(script, encoding='utf-8')
+                r = subprocess.run([sys.executable, str(Path(td) / name)], env={**os.environ, 'PYTHONPATH': str(sd)},
+                                   capture_output=True, text=True, timeout=180)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                got[name] = r.stdout.split()
+            self.assertEqual(got['cb_extent.py'], ['order', 'True', 'processes', 'True'])
+            self.assertEqual(got['other_tool.py'], ['order', 'True', 'processes', 'False'], 'any other pool stays on threads')
+
     def test_high_core_cpu_caps_j_and_process_pool_executor_to_61(self) -> None:
         """On a 32+ thread CPU, J and ProcessPoolExecutor(max_workers) must cap at 61 (_MAX_WINDOWS_WORKERS)."""
         with tempfile.TemporaryDirectory() as td:

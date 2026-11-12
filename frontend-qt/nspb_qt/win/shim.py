@@ -144,8 +144,46 @@ if os.name == 'nt' and not os.environ.get('NSPB_SHIM_OFF'):
         def terminate(self):
             self._ex.shutdown(wait=False, cancel_futures=True)
 
+        # cb_extent.py's row and c1_guard.py's unproven: after the shader compile they read every
+        # shader's MSL with regular expressions, pure Python that threads run one at a time (the
+        # GIL): Ocarina of Time's 42,848 shaders kept the build at "compiling 99%" for over 20
+        # minutes on one core. Both are top-level functions of a script whose main() is guarded,
+        # so spawned processes import it as __mp_main__ and run them on every core.
+        _PROCESS_FNS = (('row', 'cb_extent.py'), ('unproven', 'c1_guard.py'))
+
+        def _process_pool_for(self, fn, n):
+            g = getattr(fn, '__globals__', None) or {}
+            if n < 2 or (getattr(fn, '__name__', ''), os.path.basename(str(g.get('__file__') or ''))) not in self._PROCESS_FNS:
+                return None
+            try:
+                return _orig_get_context('spawn').Pool(processes=min(_MAX_WIN_WORKERS, self._workers, n))
+            except Exception:
+                return None
+
+        def _imap_processes(self, pool, fn, jobs, chunksize):
+            done = 0
+            try:
+                for r in pool.imap(fn, jobs, chunksize):
+                    done += 1
+                    yield r
+                pool.close()
+                pool.join()
+                return
+            except Exception:
+                pass   # a process that could not start or died: threads finish the rest, as before
+            finally:
+                pool.terminate()
+            yield from self._ex.map(fn, jobs[done:])
+
+        def imap(self, fn, iterable, chunksize=1):
+            jobs = list(iterable)
+            pool = self._process_pool_for(fn, len(jobs))
+            if pool is None:
+                return self._ex.map(fn, jobs)
+            return self._imap_processes(pool, fn, jobs, max(1, int(chunksize or 1)))
+
         def map(self, fn, iterable, chunksize=1):
-            return list(self._ex.map(fn, iterable))
+            return list(self.imap(fn, iterable, chunksize))
 
         def imap_unordered(self, fn, iterable, chunksize=1):
             return self._ex.map(fn, iterable)
