@@ -343,8 +343,15 @@ class MetalArgsTest(unittest.TestCase):
         self.assertIn('linker unavailable', detail)
 
     def test_metal_tt_has_no_windows_tool(self) -> None:
-        # the pipeline archive is disabled here, and the caller relies on this being None
-        self.assertIsNone(tc.metal_tool('metal-tt'))
+        # the pipeline archive is disabled here, and the caller relies on this being None. Tools of their own: the
+        # Metal Developer Tools installed on a player's PC can hold a metal-tt.exe, and the test read that PC's.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / 'ios' / 'bin').mkdir(parents=True)
+            for exe in ('metal.exe', 'metallib.exe'):
+                (Path(td) / 'ios' / 'bin' / exe).write_bytes(b'')
+            with mock.patch.object(tc, 'metal_dir', return_value=Path(td)):
+                self.assertIsNotNone(tc.metal_tool('metal'))
+                self.assertIsNone(tc.metal_tool('metal-tt'))
 
     def test_metal_tool_takes_name_then_sdk(self) -> None:
         """The signature is (name, sdk). Both call sites once had it backwards, which made
@@ -759,7 +766,10 @@ class DriverPatchTest(unittest.TestCase):
         self.assertTrue(self.mod.apple_silicon())
 
     def test_check_prereqs_raises_with_a_report(self) -> None:
-        with self.assertRaises(self.mod.BuildError) as ctx:
+        # A PC without LLVM, as the CI's: on a PC that has it the check went on to the translator's folder instead.
+        from nspb_qt.win import toolchain as tcm
+        with mock.patch.object(tcm, 'llvm_dir', return_value=None), mock.patch.object(tcm, 'llvm_tool', return_value=None), \
+                self.assertRaises(self.mod.BuildError) as ctx:
             self.mod.check_prereqs({}, Path('missing/dmsh_xlate'), mac=False)
         msg = str(ctx.exception)
         self.assertIn('missing on this PC', msg)
@@ -1806,6 +1816,17 @@ class SymlinkMaterializeTest(unittest.TestCase):
     """The SDK git route on Windows: symlinks checked out as text stubs get their targets copied
     over them, so ld64.lld finds a real `--- !tapi-tbd` file instead of 15 bytes of path text."""
 
+    def setUp(self) -> None:
+        # The tests make a real symlink. Windows lets an account do that only with Developer Mode on or as an
+        # administrator (WinError 1314 otherwise), which is why the checkout there has text stubs at all.
+        probe = Path(tempfile.mkdtemp(prefix='nspb-symlink-probe-'))
+        try:
+            (probe / 'link').symlink_to('target')
+        except OSError as e:
+            self.skipTest(f'this account cannot create symlinks: {e}')
+        finally:
+            shutil.rmtree(probe, ignore_errors=True)
+
     def _git(self, *args: str, cwd: Path) -> None:
         env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
                    GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
@@ -2018,7 +2039,7 @@ class VenvWheelsTest(unittest.TestCase):
 
     def test_offline_args_when_wheels_are_bundled(self) -> None:
         args = self._pip_args_fn()(['lz4', 'nsz'], Path('C:/app/wheels'))
-        self.assertEqual(args, ['install', '--no-index', '--find-links', 'C:/app/wheels', 'lz4', 'nsz'])
+        self.assertEqual(args, ['install', '--no-index', '--find-links', str(Path('C:/app/wheels')), 'lz4', 'nsz'])   # backslashes on Windows
 
     def test_pypi_args_when_not_bundled(self) -> None:
         self.assertEqual(self._pip_args_fn()(['lz4'], None), ['install', 'lz4'])
@@ -2245,12 +2266,20 @@ class WindowsBuildFixesTest(unittest.TestCase):
             finally:
                 os.close(fd)
 
-            # Test backslash path resolution against RomFS.img
-            romfs._image.cache_clear()
-            src_path = romfs.source(v0)
-            self.assertTrue(romfs.isfile(str(img_path) + r'\Shader\sub\test.bin'))
-            with romfs.open(str(img_path) + r'\Shader\sub\test.bin', 'rb') as f:
-                self.assertEqual(f.read(), payload)
+            # Test backslash path resolution against RomFS.img. Windows has no os.pread, and its os.open opens in text
+            # mode (a read stops at 0x1A): in a build the shim adds O_BINARY to every os.open and sets the helper above
+            # as os.pread, so this does the same.
+            real_open = os.open
+
+            def binary_open(path, flags, mode=0o777, **kw):
+                return real_open(path, flags | getattr(os, 'O_BINARY', 0), mode, **kw)
+            with mock.patch.object(os, 'open', binary_open), \
+                    mock.patch.object(os, 'pread', getattr(os, 'pread', win_pread), create=True):
+                romfs._image.cache_clear()
+                src_path = romfs.source(v0)
+                self.assertTrue(romfs.isfile(str(img_path) + r'\Shader\sub\test.bin'))
+                with romfs.open(str(img_path) + r'\Shader\sub\test.bin', 'rb') as f:
+                    self.assertEqual(f.read(), payload)
             walked = list(romfs.walk(src_path))
             self.assertTrue(any(r.endswith('Shader/sub') and 'test.bin' in fs for r, _, fs in walked))
             self.assertFalse(any('\\' in r for r, _, _ in walked))
@@ -2676,9 +2705,9 @@ class WindowsBuildFixesTest(unittest.TestCase):
                 self.assertIsNotNone(cwd)
                 for arg in args[1:]:
                     self.assertNotIn(' ', arg, f'argument passed to metal/metallib contains space: {arg!r}')
-            self.assertEqual(calls[0][0], ['C:/metal/metal.exe', '-target', 'air64-apple-ios18.0',
+            self.assertEqual(calls[0][0], [str(Path('C:/metal/metal.exe')), '-target', 'air64-apple-ios18.0',
                                            'in_0.metal', '-c', '-o', 'out.air'])
-            self.assertEqual(calls[1][0], ['C:/metal/metallib.exe', 'out.air', '-o', 'out.metallib'])
+            self.assertEqual(calls[1][0], [str(Path('C:/metal/metallib.exe')), 'out.air', '-o', 'out.metallib'])
             self.assertEqual(out_ml.read_bytes(), b'MTLB_STAGED')
 
     def test_win_fork_pool_rewrites_nso_byte_identical_to_single_core(self) -> None:
@@ -2722,13 +2751,15 @@ class WindowsBuildFixesTest(unittest.TestCase):
             nso_p = Path(td) / 'main'
             nso_p.write_bytes(bytes(hdr) + tc_b + rc_b + dc_b)
             out1, out2 = Path(td) / 'out1', Path(td) / 'out2'
-            r1 = subprocess.run([sys.executable, str(patch_nso), str(nso_p), str(out1), 'main'],
-                                env={**os.environ, 'DM_REWRITE_J': '1'}, capture_output=True, text=True)
-            self.assertEqual(r1.returncode, 0, r1.stderr)
+            # Both runs under the shim, so only the pool differs: it also writes the tables with LF line ends, and on
+            # Windows a run without it wrote CRLF, which read as a difference the pool did not make.
             sd = Path(td) / 'shim'
             sd.mkdir()
             sc = shim._SITECUSTOMIZE_SRC.replace("if os.name == 'nt'", "if True")
             (sd / 'sitecustomize.py').write_text(sc, encoding='utf-8')
+            r1 = subprocess.run([sys.executable, str(patch_nso), str(nso_p), str(out1), 'main'],
+                                env={**os.environ, 'DM_REWRITE_J': '1', 'PYTHONPATH': str(sd)}, capture_output=True, text=True)
+            self.assertEqual(r1.returncode, 0, r1.stderr)
             r2 = subprocess.run([sys.executable, str(patch_nso), str(nso_p), str(out2), 'main'],
                                 env={**os.environ, 'DM_REWRITE_J': '4', 'PYTHONPATH': str(sd)},
                                 capture_output=True, text=True)
@@ -2798,8 +2829,23 @@ class WindowsBuildFixesTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertFalse(lib_dir.exists(), 'shader_lib.pack removes the folder')
             self.assertTrue((msl_ios / 'b-123456789abc.img').is_file())
-            self.assertTrue(build_app.shader_lib_has(repo, lib_dir))
-            lines = build_app.shader_lib_stamp_lines(repo, lib_dir)
+            if os.name == 'nt':
+                # build_app runs as the driver's child, under the shim, which gives romfs backslash paths and os.pread.
+                # This process has no shim, so on Windows the check runs as a build runs it.
+                sd = Path(td) / 'shim'
+                shim.install(sd)
+                code = ('import json, sys\nfrom pathlib import Path\n'
+                        f'sys.path.insert(0, {str(QT)!r})\n'
+                        'from nspb_qt.win import build_app\n'
+                        f'repo, lib = Path({str(repo)!r}), Path({str(lib_dir)!r})\n'
+                        'print(json.dumps([build_app.shader_lib_has(repo, lib), build_app.shader_lib_stamp_lines(repo, lib)]))\n')
+                r = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'PYTHONPATH': str(sd)},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                has, lines = json.loads(r.stdout.strip().splitlines()[-1])
+            else:
+                has, lines = build_app.shader_lib_has(repo, lib_dir), build_app.shader_lib_stamp_lines(repo, lib_dir)
+            self.assertTrue(has)
             self.assertIn('game\t0100E65002BB8000', lines)
             self.assertIn('inputs\tabcdef01', lines)
 
@@ -6024,7 +6070,7 @@ class GMShadersAndCaptureReuseTest(unittest.TestCase):
             self.assertEqual(packed_jit, jit_dir)
             self.assertEqual((jit_dir / 'jit.img').read_bytes(), b'PACKED_JIT')
             self.assertEqual(len(ran_jit_cmd), 1)
-            self.assertTrue(ran_jit_cmd[0][1].endswith('dm/tools/jit_capture.py'))
+            self.assertTrue(Path(ran_jit_cmd[0][1]).as_posix().endswith('dm/tools/jit_capture.py'))   # backslashes on Windows
 
             # 5. capture_nro returns profile when missing.tsv is absent or empty, refuses when non-empty
             nro_dir = root / 'nro_v0'

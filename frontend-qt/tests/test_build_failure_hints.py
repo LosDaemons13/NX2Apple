@@ -56,7 +56,8 @@ class Classifier(unittest.TestCase):
                     self.assertEqual(os.strerror(errno.ENOSPC), f['fragment'])
                     continue
                 if f['source'] == 'errno45':   # the system's text for ENOTSUP, which renamex_np answers on a volume without RENAME_SWAP
-                    self.assertEqual(os.strerror(errno.ENOTSUP), f['fragment'])
+                    if os.name != 'nt':   # macOS's words, which the build logs carry; Windows says only "not supported"
+                        self.assertEqual(os.strerror(errno.ENOTSUP), f['fragment'])
                     continue
                 if f['source'] == 'codesign':   # Apple's text, from a tool the script runs
                     continue

@@ -28,9 +28,14 @@ def ascii_only(path: str) -> bool:
 
 class AsciiTempDir(unittest.TestCase):
     def test_an_ascii_temp_is_used_as_it_is(self):
-        with mock.patch.object(tempfile, 'gettempdir', return_value='/tmp'):
+        # A real ASCII folder: on Windows '/tmp' became c:\tmp, which the old prefix test did not read as /tmp/.
+        base = tempfile.mkdtemp(prefix='ascii-temp-')
+        self.addCleanup(os.rmdir, base)
+        if not ascii_only(base):
+            self.skipTest(f'this temporary folder is not ASCII: {base}')
+        with mock.patch.object(tempfile, 'gettempdir', return_value=base):
             with toolchain.ascii_temp_dir('probe-') as d:
-                self.assertTrue(str(d).startswith('/tmp/'), d)
+                self.assertEqual(os.path.normcase(os.path.dirname(str(d))), os.path.normcase(base), d)
                 self.assertTrue(ascii_only(str(d)))
 
     def test_a_non_ascii_temp_is_skipped_when_an_ascii_one_exists(self):

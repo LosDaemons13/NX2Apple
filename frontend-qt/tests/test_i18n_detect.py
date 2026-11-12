@@ -26,8 +26,12 @@ from nspb_qt.i18n import Lang   # noqa: E402
 
 
 def detect(locale_name: str, platform: str = 'darwin', env: dict | None = None) -> Lang:
-    """Lang.initial() with locale.getlocale() answering `locale_name` and only `env` set."""
+    """Lang.initial() with locale.getlocale() answering `locale_name` and only `env` set. The Windows API, asked first on
+    win32, gives no language: on a real Windows it answered that PC's own (a French Windows made every case 'fr')."""
+    silent = mock.Mock()
+    silent.windll.kernel32.GetLocaleInfoW.return_value = 0
     with mock.patch.dict(os.environ, env or {}, clear=True), \
+         mock.patch.dict(sys.modules, {'ctypes': silent}), \
          mock.patch('locale.getlocale', return_value=(locale_name, None)), \
          mock.patch.object(sys, 'platform', platform):
         return Lang.initial()
