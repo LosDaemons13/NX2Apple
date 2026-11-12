@@ -605,6 +605,107 @@ extern void *dm_quit_menu(void);
 
 static NspbModel *g_game_menu_model;
 
+// The menu's own words in the player's language: DM_GAME_MENU_TEXT, one per line, which the shell sets at launch (ShellHostModel.gameMenuText).
+// GameMenu.swift's order, then this file's: 0 More settings on the start screen, 1 Controller layout, 2 Keys that toggle, 3 None, 4 For this
+// game, 5 All amiibo, 6 Take it off. A line that is missing or empty stays English.
+static NSString *nspb_menu_text(NSUInteger line, NSString *english) {
+    const char *env = getenv("DM_GAME_MENU_TEXT");
+    if (!env) return english;
+    NSString *all = [[NSString stringWithUTF8String:env] stringByReplacingOccurrencesOfString:@"\\n" withString:@"\n"];
+    NSArray<NSString *> *lines = [all componentsSeparatedByString:@"\n"];
+    NSString *text = line < lines.count ? [lines[line] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] : @"";
+    return text.length ? text : english;
+}
+
+#pragma mark - amiibo (patch 0127: the host's virtual amiibo, front.h dm_amiibo_*)
+
+extern int dm_amiibo_offered(void);
+extern void dm_amiibo_place(const char *id_hex, const char *name);
+extern void dm_amiibo_remove(void);
+extern int dm_amiibo_placed(char out_hex[17]);
+
+@interface NspbAmiibo : NSObject
+@property(nonatomic, copy) NSString *ident, *name, *series, *use;
+@end
+@implementation NspbAmiibo
+@end
+
+// dm/amiibo.tsv beside launcher.json in this game's bundle (build_app.py writes it with amiibo_db.py): every amiibo by name, read once.
+// A line: the ID (16 hex digits), the name, the series, what it does in this game (empty when the list does not say).
+static NSArray<NspbAmiibo *> *nspb_amiibo_list(void) {
+    static NSArray<NspbAmiibo *> *list;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<NspbAmiibo *> *out = [NSMutableArray array];
+        NSString *text = nil, *path = nil;
+        for (NSBundle *b in @[[NSBundle bundleForClass:NspbAmiibo.class], NSBundle.mainBundle]) {
+            path = [[b.resourcePath stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"amiibo.tsv"];
+            text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            if (text) break;
+        }
+        if (!text) fprintf(stderr, "launcher: no dm/amiibo.tsv in the game's bundle: the in-game menu has no amiibo\n");
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+            if (!line.length || [line hasPrefix:@"#"]) continue;
+            NSArray<NSString *> *f = [line componentsSeparatedByString:@"\t"];
+            if (f.count < 4 || f[0].length != 16 || !f[1].length) continue;
+            NspbAmiibo *a = [NspbAmiibo new];
+            a.ident = f[0]; a.name = f[1]; a.series = f[2]; a.use = f[3];
+            [out addObject:a];
+        }
+        [out sortUsingComparator:^NSComparisonResult(NspbAmiibo *x, NspbAmiibo *y) { return [x.name localizedCaseInsensitiveCompare:y.name]; }];
+        list = out;
+    });
+    return list;
+}
+
+// Amiibo: a pick places the amiibo on the host's NFC reader (the game finds it at its search, and it leaves once the game has read it);
+// the one on the reader comes first, to take off. Then the amiibo this game uses, each with what it does, then all of them by series.
+static UIMenuElement *nspb_amiibo_menu(void) {
+    NSArray<NspbAmiibo *> *all = nspb_amiibo_list();
+    char placed[17] = {0};
+    NSString *on = dm_amiibo_placed(placed) ? [NSString stringWithUTF8String:placed] : nil;
+    NSString *onName = nil;
+    UIAction *(^pick)(NspbAmiibo *, BOOL) = ^UIAction *(NspbAmiibo *a, BOOL withUse) {
+        UIAction *act = [UIAction actionWithTitle:a.name image:nil identifier:nil handler:^(__kindof UIAction *__unused x) {
+            dm_amiibo_place(a.ident.UTF8String, a.name.UTF8String);
+        }];
+        if (withUse && a.use.length) act.subtitle = a.use;
+        act.state = [a.ident isEqualToString:on] ? UIMenuElementStateOn : UIMenuElementStateOff;
+        return act;
+    };
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+    NSMutableArray<UIMenuElement *> *mine = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray<UIMenuElement *> *> *bySeries = [NSMutableDictionary dictionary];
+    for (NspbAmiibo *a in all) {
+        if ([a.ident isEqualToString:on]) onName = a.name;
+        if (a.use.length) [mine addObject:pick(a, YES)];
+        NSString *series = a.series.length ? a.series : @"Other";
+        if (!bySeries[series]) bySeries[series] = [NSMutableArray array];
+        [bySeries[series] addObject:pick(a, NO)];
+    }
+    if (on) {
+        UIAction *off = [UIAction actionWithTitle:nspb_menu_text(6, @"Take it off") image:nil identifier:nil handler:^(__kindof UIAction *__unused x) {
+            dm_amiibo_remove();
+        }];
+        off.subtitle = onName ?: on;
+        off.attributes = UIMenuElementAttributesDestructive;
+        [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[off]]];
+    }
+    if (mine.count) {   // a long list (Super Smash Bros. Ultimate uses 233) gets its own submenu
+        [children addObject:[UIMenu menuWithTitle:nspb_menu_text(4, @"For this game") image:nil identifier:nil
+                                          options:mine.count > 40 ? 0 : UIMenuOptionsDisplayInline children:mine]];
+    }
+    NSMutableArray<UIMenuElement *> *series = [NSMutableArray array];
+    for (NSString *name in [bySeries.allKeys sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)]) {
+        [series addObject:[UIMenu menuWithTitle:name image:nil identifier:nil options:0 children:bySeries[name]]];
+    }
+    [children addObject:[UIMenu menuWithTitle:nspb_menu_text(5, @"All amiibo") image:nil identifier:nil options:0 children:series]];
+    UIMenu *menu = [UIMenu menuWithTitle:@"amiibo" image:[UIImage systemImageNamed:@"dot.radiowaves.left.and.right"] identifier:nil
+                                 options:0 children:children];
+    menu.subtitle = onName ?: (on ?: nspb_menu_text(3, @"None"));
+    return menu;
+}
+
 static UIMenuElement *nspb_game_menu_row(NspbModel *m, NspbSetting *s) {
     NSString *now = [m value:s];
     BOOL fixed = [m locked:s];
@@ -660,7 +761,7 @@ static NSArray<UIMenuElement *> *nspb_game_menu_items(void) {
         a.state = (dm_pad_layout() == l) ? UIMenuElementStateOn : UIMenuElementStateOff;
         [layouts addObject:a];
     }
-    UIMenu *layout = [UIMenu menuWithTitle:@"Controller layout" image:nil identifier:nil options:UIMenuOptionsSingleSelection children:layouts];
+    UIMenu *layout = [UIMenu menuWithTitle:nspb_menu_text(1, @"Controller layout") image:nil identifier:nil options:UIMenuOptionsSingleSelection children:layouts];
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray array];
     BOOL placed = NO;
     NspbModel *m = g_game_menu_model;
@@ -686,6 +787,9 @@ static NSArray<UIMenuElement *> *nspb_game_menu_items(void) {
     if (!placed) {
         [items insertObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[layout]] atIndex:0];
     }
+    if (dm_amiibo_offered() && nspb_amiibo_list().count) {   // a game with the amiibo library: its own row, before Quit
+        [items addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[nspb_amiibo_menu()]]];
+    }
     void *quit = dm_quit_menu();
     if (quit) {
         UIMenu *qm = CFBridgingRelease(quit);
@@ -696,7 +800,7 @@ static NSArray<UIMenuElement *> *nspb_game_menu_items(void) {
 
 __attribute__((used, visibility("default")))
 void *dm_game_menu(void) {
-    NSString *title = g_game_menu_model ? @"More settings on the start screen" : @"";
+    NSString *title = g_game_menu_model ? nspb_menu_text(0, @"More settings on the start screen") : @"";
     UIDeferredMenuElement *def = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^done)(NSArray<UIMenuElement *> *)) {
         done(nspb_game_menu_items());
     }];

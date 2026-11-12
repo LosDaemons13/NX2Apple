@@ -634,9 +634,11 @@ public struct ShellHostConfig: Sendable {
     }
 
     /// DM_GAME_MENU_TEXT: the in-game menu's own words in the player's language, one per line in the engine's order (patch 0124, GameMenu.swift):
-    /// its title, Controller layout, Keys that toggle and None (#1129).
+    /// its title, Controller layout, Keys that toggle and None (#1129), then the amiibo menu's (patch 0127, the Windows launcher's
+    /// Launcher.m): For this game, All amiibo, Take it off.
     static var gameMenuText: String {
-        [hostText("More settings on the start screen"), hostText("Controller layout"), hostText("Keys that toggle"), hostText("None")]
+        [hostText("More settings on the start screen"), hostText("Controller layout"), hostText("Keys that toggle"), hostText("None"),
+         hostText("For this game"), hostText("All amiibo"), hostText("Take it off")]
             .map { $0.replacingOccurrences(of: "\n", with: " ") }.joined(separator: "\n")
     }
 
@@ -651,6 +653,9 @@ public struct ShellHostConfig: Sendable {
         env["DM_HOME_QUIT_TEXT"] = Self.quitPromptText(gameName: entry(id)?.title ?? id)
         // The in-game menu's own words (patch 0124), as the Mac's build bakes them into a game's own app.
         env["DM_GAME_MENU_TEXT"] = Self.gameMenuText
+        // Virtual amiibo (patch 0127) keep their application areas in Documents/amiibo, one folder for every game: an amiibo holds
+        // the data of each game that used it, as one figure does on a console.
+        env["DM_AMIIBO_DIR"] = config.appDataRoot.deletingLastPathComponent().appendingPathComponent("amiibo", isDirectory: true).path
         // A launcher.json DM_PAD_MAP row is authoritative, including an empty value.
         if !profile.settings.contains(where: { $0.env == "DM_PAD_MAP" }) {
             env["DM_PAD_MAP"] = PadMap.merged(global: shellSettings.padMap,

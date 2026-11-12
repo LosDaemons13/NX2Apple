@@ -38,12 +38,14 @@ if __package__:
     from . import toolchain as tc
     from . import fix_ipa_modes
     from . import macho_sign
+    from . import amiibo_db
     from . import IOS_CPU, IOS_DEPLOYMENT
 else:                                       # pragma: no cover - script mode
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from nspb_qt.win import toolchain as tc
     from nspb_qt.win import fix_ipa_modes
     from nspb_qt.win import macho_sign
+    from nspb_qt.win import amiibo_db
     from nspb_qt.win import IOS_CPU, IOS_DEPLOYMENT
 
 HERE = Path(__file__).resolve().parent
@@ -982,6 +984,9 @@ def main(argv: list[str] | None = None) -> int:
     launcher = py(repo / 'dm/games/settings.py', gd, patched, nacp,
                   gen / 'launcher.json', env=dict(env, GFXAPI=gfx))
     shutil.copy2(gen / 'launcher.json', dmres / 'launcher.json')
+    # The in-game menu's amiibo (ios/Launcher.m, patch 0127): every amiibo, and what each does in this game
+    used = amiibo_db.write_game_list(gp('title_id') or game, dmres / 'amiibo.tsv')
+    t(f'amiibo: the in-game menu lists them all, {used} this game uses first')
     if not env.get('DM_LANG'):
         try:
             import json
