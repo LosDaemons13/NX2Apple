@@ -1,0 +1,584 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Thu, 12 Nov 2026 21:09:44 +0100
+Subject: [PATCH] nfp: virtual amiibo the front end places on the host's NFC
+ reader
+
+The host had no NFC reader, and its nfp hooks answered "tag not found" to
+everything, so no game's amiibo feature could be used. A game reads only
+an amiibo's ID from the tag (character, variant, figure type, model number
+and series), the tag's UID and its own application area; the ID is public,
+so a figure can be made from it with no dump of a real one and no key.
+
+The reader now holds a virtual amiibo that the front end places by its ID
+and name (dm_amiibo_place, front.h). The game finds it at its search (the
+activate event, or GetDeviceState when it polls), mounts it and reads its
+tag info (a stable 7-byte NXP UID derived from the ID), model info, common
+info and register info (the default Mii, the name as nickname). When the
+game stops detection after reading it, the amiibo leaves the reader, as a
+figure lifted after a tap; dm_amiibo_remove takes it off and signals the
+deactivate event. Application areas are kept per access ID under
+DM_AMIIBO_DIR (an amiibo folder beside DM_SAVE by default), so one virtual
+amiibo holds every game's data at once. The amiibo settings applets answer
+as cancelled. Hooks that touch files keep their paths on the heap: a game
+thread's stack can be 8 KB.
+
+t_nfc.c runs a figure through the whole sequence: placed, found, its tag
+and model, its area created, written, flushed and read back after a new
+mount, then lifted and taken off.
+
+Upstream-Status: pending
+Reason: amiibo features in every game that uses them (Super Mario Odyssey's costumes, invincibility, hearts and Power Moon hints first)
+Issue: none yet (LosDaemons13/NX2Apple, amiibo in Super Mario Odyssey)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ dm/games/0100000000010000/README.md |   1 +
+ dm/host/front.h                     |   8 +
+ dm/host/hle_mii.c                   |   2 +
+ dm/host/hle_sdk16.c                 | 322 ++++++++++++++++++++++++----
+ dm/host/tests/t_nfc.c               |  80 +++++++
+ docs/development.md                 |   2 +-
+ docs/reference/services.md          |  10 +-
+ 7 files changed, 385 insertions(+), 40 deletions(-)
+
+diff --git a/dm/games/0100000000010000/README.md b/dm/games/0100000000010000/README.md
+index d33d051..118b616 100644
+--- a/dm/games/0100000000010000/README.md
++++ b/dm/games/0100000000010000/README.md
+@@ -68,6 +68,7 @@ General host and tool changes first needed here; each applies to every game:
+ - **Joy-Cons as dual or single npads:** [Joy-Cons as dual or single npads](../../../docs/reference/services.md#joy-cons-as-dual-or-single-npads): a Joy-Con 2 pair as a JoyDual npad with two sensors (the two-handed throws); two-player mode splits it.
+ - **Switch 2 controllers over Bluetooth LE:** [Switch 2 controllers over Bluetooth LE](../../../docs/reference/services.md#switch-2-controllers-over-bluetooth-le): the cap throw by shaking with a Joy-Con 2 pair, from the right Joy-Con's sensor, and rumble on both Joy-Cons.
+ - **Chinese language aliases in both settings equality operators:** [Chinese language aliases in settings comparisons](../../../docs/reference/services.md#chinese-language-aliases-in-settings-comparisons).
++- **Virtual amiibo:** [Virtual amiibo](../../../docs/reference/services.md#virtual-amiibo): a figure placed from NX2Apple's in-game menu, found at the game's amiibo search; the game uses detection, the tag and model info, mount and unmount (13 `nfp` calls), none of the application area. Not yet played with one.
+ - **BAHS pairs omitted from vertex padding:** [Pixel shader inputs the vertex shader does not write](../../../docs/reference/shaders.md#pixel-shader-inputs-the-vertex-shader-does-not-write).
+ - **Front end at `-O1`** (`dmsh_build.py` and `ios_metal.py`): [Front end at -O1: Apple's control-flow lowering](../../../docs/reference/shaders.md#front-end-at--o1-apples-control-flow-lowering).
+ - **A failed pipeline archive no longer stops the build:** [A failed pipeline archive stops the whole build](../../../docs/reference/shaders.md#a-failed-pipeline-archive-stops-the-whole-build).
+diff --git a/dm/host/front.h b/dm/host/front.h
+index d36e61c..48463d2 100644
+--- a/dm/host/front.h
++++ b/dm/host/front.h
+@@ -61,6 +61,14 @@ typedef struct { uint32_t id; float x, y; } dm_touch;
+ void dm_touch_set(const dm_touch *t, int n);
+ void dm_touch_script(const dm_touch *t, int n);   // scripted touches (DM_KEYS, DM_CTL; hle_hid.c): as dm_touch_set, but never recorded by DM_REC
+ 
++// Virtual amiibo (implemented by the host's hle_sdk16.c, nfp; called by the front end's in-game menu, from any thread). An amiibo is its ID, 16 hex digits (the character, variant,
++// type, model number and series a game reads), and a name (the nickname games show, cut to 10 characters). A placed amiibo is on the host's NFC reader: the game finds it at its
++// next search, or at once when it is searching, and it leaves the reader when the game stops detection after reading it (a tap), or when the menu takes it off.
++int dm_amiibo_offered(void);   // 1 while the game has the amiibo library initialized: the menu offers amiibo only then
++void dm_amiibo_place(const char *id_hex, const char *name);
++void dm_amiibo_remove(void);
++int dm_amiibo_placed(char out_hex[17]);   // 1 while one is on the reader, its ID in out_hex (may be NULL)
++
+ // Save not written (called by the host's hle_fs.c; the iOS front end provides a strong implementation of the same name that shows the native prompt "Not enough storage. Progress was not saved"; the default weak implementation only logs).
+ // Timing: when a save write fails (disk full etc.) within one of the game's save transactions (between two Commits), so that this Commit is refused and the previously committed save is unchanged, it is called once per refused transaction;
+ // the next transaction that succeeds commits as usual, and the front end need not do any recovery. err = the first failing errno (ENOSPC = 28 means out of space). Called on the game thread; the front end switches to the main thread itself and must not block
+diff --git a/dm/host/hle_mii.c b/dm/host/hle_mii.c
+index d2148a0..118fff0 100644
+--- a/dm/host/hle_mii.c
++++ b/dm/host/hle_mii.c
+@@ -48,6 +48,8 @@ static void mii_default(mii_charinfo *c, int gender, int index) {
+     c->glass_color = 8; c->glass_scale = 4; c->glass_y = 10;
+     c->mole_scale = 4; c->mole_x = 2; c->mole_y = 20;
+ }
++// The owner of a virtual amiibo (hle_sdk16.c GetRegisterInfo): default Mii 0, as the console's first default Mii
++void hle_mii_default_charinfo(void *out) { mii_default((mii_charinfo *)out, 0, 0); }
+ 
+ // The object keeps its service pointer at +0, which the constructor zeroes and the destructor releases through its vtable when set; the host never sets it
+ HLE_FORCE("_ZN2nn3mii8Database10InitializeEv", "mii:u service; the host's database: the six default Miis, none of the console's own", Result, h_mii_Init, void *self) {
+diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
+index e656b6e..13a586c 100644
+--- a/dm/host/hle_sdk16.c
++++ b/dm/host/hle_sdk16.c
+@@ -222,61 +222,307 @@ HLE_FORCE("_ZN2nn3nfc12IsNfcEnabledEv", "NFC switched on or off (returns bool):
+ 
+ // ---------- nfp: amiibo ----------
+ // From Mario 1.2.1 the game initializes nfp at boot (v0 did not use it). The real SDK would connect to the sm: service, which the host lacks → abort, so the whole family is taken over.
+-// The host has no NFC reader: it reports one NFC device on the currently connected controller (same as hle_hid.c) whose detection never finds a tag -- the same as real hardware with no amiibo at hand:
+-// the game's "touch an amiibo" screen appears as usual and cancelling leaves it. Operations that need a tag (mount, application area read / write, amiibo settings applets) all return "tag not found".
+-// The game attaches no activate / deactivate events; it polls GetDeviceState to see whether a tag is there.
++// The host has one NFC device, on the currently connected controller (same as hle_hid.c). Its reader holds a virtual amiibo when the player places one from the front end's in-game
++// menu (dm_amiibo_place, front.h). An amiibo is its 8-byte ID (character, variant, type, model number, series): that is what a game reads to know the figure, so no figure's dump
++// and no key is needed. With none placed, detection never finds a tag, as on a console with no amiibo at hand: the game's "touch an amiibo" screen appears and cancelling leaves it,
++// and the operations that need a tag answer "tag not found".
++// A placed amiibo is found when the game searches (at StartDetection, or at once when it is already searching), which signals the activate event; a game that attached none polls
++// GetDeviceState. The game mounts the tag and reads its tag, model, common and register info and its application area. When it stops detection after it found the tag, the amiibo
++// leaves the reader, as a player lifts a figure once the game has read it: the next search needs another pick. Taken off from the menu (dm_amiibo_remove), it signals the deactivate event.
++// Application areas: a real amiibo holds one game's area, and a game that finds another's must have it erased; a virtual one keeps one per access ID, so it is every game's at once.
++// Each is <DM_AMIIBO_DIR>/<amiibo ID>/<access ID>.bin: the 216 bytes, then the write counter (4 bytes, little-endian). DM_AMIIBO_DIR defaults to an amiibo folder beside DM_SAVE.
++// The amiibo settings applets (nickname and owner, game data eraser, restorer) are not on the host: they answer as cancelled, nothing changed.
+ // GetState is the library's own state, as on Horizon: 0 until Initialize, 1 until Finalize. Breath of the Wild (main+0x128ec7c) and Tears of the Kingdom (main+0xca5200) call Initialize and attach their
+ // availability change event only when GetState is not 1; answering 1 before Initialize skipped the attach, and TotK's poll of that event (main+0x1fb991c) aborted in TryWaitSystemEvent (#613).
+-#define NFP_RES_TAG_NOT_FOUND (115u | 97u << 9)   // module 115 (nfp), description 97
+-enum { NFP_STATE_INIT = 0, NFP_STATE_SEARCH = 1 };   // 0 initialized, 1 searching for a tag (2 = tag found, never on the host)
++#define NFP_RES(d) (115u | (uint32_t)(d) << 9)   // module 115 (nfp)
++#define NFP_RES_TAG_NOT_FOUND NFP_RES(97)
++#define NFP_RES_INVALID_ARGUMENT NFP_RES(65)
++#define NFP_RES_AREA_NOT_CREATED NFP_RES(128)   // OpenApplicationArea: no area for this access ID yet, the game creates one
++#define NFP_RES_AREA_EXISTS NFP_RES(168)        // CreateApplicationArea: this access ID has one already
++// Device states: 0 initialized, 1 searching for a tag, 2 tag found, 3 tag removed, 4 tag mounted
++enum { NFP_STATE_INIT = 0, NFP_STATE_SEARCH = 1, NFP_STATE_FOUND = 2, NFP_STATE_REMOVED = 3, NFP_STATE_MOUNTED = 4 };
+ typedef struct { uint32_t id; uint8_t reserved[4]; } NfpDeviceHandle;
+ #define NFP_DEVICE_ID 0x4e465030u   // 'NFP0'
++#define NFP_AREA_SIZE 216   // an amiibo's application area (0xd8 bytes)
++// The SDK's structures, as the nfp service fills them
++typedef struct { uint16_t year; uint8_t month, day; } NfpDate;
++typedef struct { uint8_t uid[10]; uint8_t uid_length; uint8_t reserved1[21]; uint32_t protocol, type; uint8_t reserved2[48]; } NfpTagInfo;
++// character_id keeps the tag's two bytes as they are; model_number is the number (the tag stores it big-endian)
++typedef struct { uint8_t character_id[2]; uint8_t variant, figure_type; uint16_t model_number; uint8_t series; uint8_t reserved[57]; } NfpModelInfo;
++typedef struct { NfpDate last_write; uint16_t write_counter, version; uint32_t area_size; uint8_t reserved[52]; } NfpCommonInfo;
++typedef struct { uint8_t mii[0x58]; NfpDate first_write; char nickname[41]; uint8_t font_region; uint8_t reserved[122]; } NfpRegisterInfo;
++typedef struct { uint32_t access_id; uint32_t pad; const void *data; uint32_t size; uint8_t reserved[48]; } NfpAreaCreateInfo;
++_Static_assert(sizeof(NfpTagInfo) == 0x58 && sizeof(NfpModelInfo) == 0x40 && sizeof(NfpCommonInfo) == 0x40 && sizeof(NfpRegisterInfo) == 0x100, "nfp structure sizes");
++void hle_mii_default_charinfo(void *out);   // hle_mii.c: the system's default Mii, the owner of a virtual amiibo
++static pthread_mutex_t g_nfp_mu = PTHREAD_MUTEX_INITIALIZER;
+ static _Atomic int g_nfp_state;
+ static _Atomic int g_nfp_lib;   // the library state GetState answers: 0 uninitialized, 1 initialized
++static void *g_nfp_activate, *g_nfp_deactivate;   // the game's events (under g_nfp_mu)
++static struct {   // the reader (under g_nfp_mu)
++    int placed;                // a virtual amiibo is on it
++    uint8_t id[8];             // its ID
++    char name[41];             // its nickname: the amiibo's name, up to 10 characters
++    int area_open;             // OpenApplicationArea succeeded since the mount
++    uint32_t area_id;
++    uint8_t area[NFP_AREA_SIZE];
++    uint32_t counter;          // the open area's write counter
++    int dirty;                 // SetApplicationArea since the last Flush
++} g_amiibo;
+ uint32_t hle_hid_connected_npad(void);
+ static Result nfp_no_tag(const char *what) {
+-    static _Atomic int logged; if (!atomic_exchange(&logged, 1)) LOG("nfp: %s and other operations that need an amiibo tag → no tag found (the host has no NFC)", what);
++    static _Atomic int logged; if (!atomic_exchange(&logged, 1)) LOG("nfp: %s and other operations that need an amiibo tag → no tag found (no amiibo on the reader)", what);
+     return NFP_RES_TAG_NOT_FOUND;
+ }
+-HLE_FORCE("_ZN2nn3nfp10InitializeEv", "amiibo library init; the host has one NFC device that never finds a tag", void, h_nfp_Init, void) { atomic_store(&g_nfp_lib, 1); LOG("nfp::Initialize: the host has one NFC device and finds no amiibo tag"); }
+-// Kirby Air Riders initializes it with this one instead; on the host the extended application area is no different, as no tag ever has one
+-HLE_FORCE("_ZN2nn3nfp37InitializeWithExtendedApplicationAreaEv", "amiibo library init with the extended application area; the same device that never finds a tag", void, h_nfp_InitExt, void) { atomic_store(&g_nfp_lib, 1); LOG("nfp::InitializeWithExtendedApplicationArea: the host has one NFC device that never finds a tag"); }
++static int nfp_has_tag(void) { int s = atomic_load(&g_nfp_state); return s == NFP_STATE_FOUND || s == NFP_STATE_MOUNTED; }
++static void nfp_today(NfpDate *d) {
++    time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm);
++    d->year = (uint16_t)(tm.tm_year + 1900); d->month = (uint8_t)(tm.tm_mon + 1); d->day = (uint8_t)tm.tm_mday;
++}
++// The folder of the amiibo on the reader, <DM_AMIIBO_DIR or the amiibo folder beside DM_SAVE>/<ID> (under g_nfp_mu), created on the way when make is set; NULL when there is
++// neither variable. The paths are on the heap: a hook runs on the game's thread, whose stack can be 8 KB
++static char *nfp_dir(int make) {
++    char *base = NULL; const char *d = getenv("DM_AMIIBO_DIR");
++    if (d && *d) base = strdup(d);
++    else {
++        const char *save = getenv("DM_SAVE"); if (!save || !*save) return NULL;
++        char *s = strdup(save); if (!s) return NULL;
++        size_t l = strlen(s); while (l > 1 && s[l - 1] == '/') s[--l] = 0;
++        char *slash = strrchr(s, '/');
++        if (slash) { *slash = 0; if (asprintf(&base, "%s/amiibo", s) < 0) base = NULL; }
++        free(s);
++    }
++    if (!base) return NULL;
++    const uint8_t *id = g_amiibo.id; char *out = NULL;
++    if (asprintf(&out, "%s/%02x%02x%02x%02x%02x%02x%02x%02x", base, id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]) < 0) out = NULL;
++    if (make && out) { mkdir(base, 0755); mkdir(out, 0755); }
++    free(base); return out;
++}
++static char *nfp_area_path(uint32_t access_id, int make) {
++    char *dir = nfp_dir(make), *p = NULL; if (!dir) return NULL;
++    if (asprintf(&p, "%s/%08x.bin", dir, access_id) < 0) p = NULL;
++    free(dir); return p;
++}
++// The area of access_id from its file (under g_nfp_mu): 1 when there is one
++static int nfp_area_load(uint32_t access_id, uint8_t area[NFP_AREA_SIZE], uint32_t *counter) {
++    char *p = nfp_area_path(access_id, 0); if (!p) return 0;
++    FILE *f = fopen(p, "rb"); free(p); if (!f) return 0;
++    uint8_t buf[NFP_AREA_SIZE + 4] = {0}; size_t got = fread(buf, 1, sizeof buf, f); fclose(f);
++    if (got < NFP_AREA_SIZE) return 0;
++    memcpy(area, buf, NFP_AREA_SIZE);
++    *counter = got >= sizeof buf ? (uint32_t)buf[NFP_AREA_SIZE] | (uint32_t)buf[NFP_AREA_SIZE + 1] << 8 | (uint32_t)buf[NFP_AREA_SIZE + 2] << 16 | (uint32_t)buf[NFP_AREA_SIZE + 3] << 24 : 0;
++    return 1;
++}
++// Written to a temporary file and renamed over the old one, so a crash mid-write keeps the previous area
++static Result nfp_area_store(uint32_t access_id, const uint8_t area[NFP_AREA_SIZE], uint32_t counter) {
++    char *p = nfp_area_path(access_id, 1), *tmp = NULL;
++    if (!p) { LOG("[RED] nfp: no DM_AMIIBO_DIR or DM_SAVE, the amiibo's application area is not kept"); return RES_OK; }
++    if (asprintf(&tmp, "%s.tmp", p) < 0) { free(p); return RES_OK; }
++    uint8_t buf[NFP_AREA_SIZE + 4]; memcpy(buf, area, NFP_AREA_SIZE);
++    for (int i = 0; i < 4; i++) buf[NFP_AREA_SIZE + i] = (uint8_t)(counter >> (8 * i));
++    FILE *f = fopen(tmp, "wb");
++    int ok = f && fwrite(buf, 1, sizeof buf, f) == sizeof buf;
++    if (f && fclose(f) != 0) ok = 0;
++    if (!ok) LOG("[RED] nfp: writing %s failed", tmp);
++    else if (rename(tmp, p) != 0) LOG("[RED] nfp: %s could not replace %s", tmp, p);
++    free(tmp); free(p); return RES_OK;
++}
++static void nfp_signal(void *ev) { if (ev) hle_signal_bound_system_event(ev); }
++// The reader finds the amiibo (under g_nfp_mu): returns the event to signal outside the lock
++static void *nfp_find(void) {
++    if (!g_amiibo.placed || atomic_load(&g_nfp_state) != NFP_STATE_SEARCH) return NULL;
++    atomic_store(&g_nfp_state, NFP_STATE_FOUND);
++    LOG("nfp: amiibo %02x%02x%02x%02x%02x%02x%02x%02x (%s) found", g_amiibo.id[0], g_amiibo.id[1], g_amiibo.id[2], g_amiibo.id[3], g_amiibo.id[4], g_amiibo.id[5], g_amiibo.id[6], g_amiibo.id[7], g_amiibo.name);
++    return g_nfp_activate;
++}
++// The tag leaves the reader (under g_nfp_mu): an unflushed application area is dropped, as on a tag lifted before the write
++static void nfp_lose_tag(int state) {
++    g_amiibo.area_open = 0; g_amiibo.dirty = 0;
++    atomic_store(&g_nfp_state, state);
++}
++
++HLE_FORCE("_ZN2nn3nfp10InitializeEv", "amiibo library init; one NFC device, which finds an amiibo the player places from the in-game menu", void, h_nfp_Init, void) { atomic_store(&g_nfp_lib, 1); LOG("nfp::Initialize: one NFC device; amiibo come from the in-game menu"); }
++// Kirby Air Riders initializes it with this one instead. The extended application area is not on the host's tags: those calls answer "tag not found"
++HLE_FORCE("_ZN2nn3nfp37InitializeWithExtendedApplicationAreaEv", "amiibo library init with the extended application area; the same device", void, h_nfp_InitExt, void) { atomic_store(&g_nfp_lib, 1); LOG("nfp::InitializeWithExtendedApplicationArea: one NFC device; amiibo come from the in-game menu"); }
+ HLE_FORCE("_ZN2nn3nfp29AttachAvailabilityChangeEventEPNS_2os15SystemEventTypeE", "NFC availability change event; bound to a kernel event, never signalled", void, h_nfp_AttachAvail, void *ev) { hle_bind_system_event(ev, 0); }
+ HLE_FORCE("_ZN2nn3nfp11ListDevicesEPNS0_12DeviceHandleEPii", "NFC device list: one device", Result, h_nfp_List, NfpDeviceHandle *out, int *n, int max) {
+     *n = 0; if (max >= 1) { memset(&out[0], 0, sizeof out[0]); out[0].id = NFP_DEVICE_ID; *n = 1; }
+     return RES_OK;
+ }
+ HLE_FORCE("_ZN2nn3nfp9GetNpadIdEPjRKNS0_12DeviceHandleE", "controller the NFC device is on: the one connected now", Result, h_nfp_NpadId, uint32_t *out, const NfpDeviceHandle *h) { (void)h; *out = hle_hid_connected_npad(); return RES_OK; }
+-HLE_FORCE("_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE", "start tag detection (never finds one)", Result, h_nfp_Start, const NfpDeviceHandle *h) { (void)h; atomic_store(&g_nfp_state, NFP_STATE_SEARCH); return RES_OK; }
+-HLE_FORCE("_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE", "stop tag detection", Result, h_nfp_Stop, const NfpDeviceHandle *h) { (void)h; atomic_store(&g_nfp_state, NFP_STATE_INIT); return RES_OK; }
+-HLE_FORCE("_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE", "device state: initialized / searching for a tag", int, h_nfp_State, const NfpDeviceHandle *h) { (void)h; return atomic_load(&g_nfp_state); }
+-HLE_FORCE("_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE", "tag info: no tag", Result, h_nfp_TagInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetTagInfo"); }
+-HLE_FORCE("_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE", "model info: no tag", Result, h_nfp_ModelInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetModelInfo"); }
+-HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE", "mount tag: no tag", Result, h_nfp_Mount, const NfpDeviceHandle *h, int model, int target) { (void)h; (void)model; (void)target; return nfp_no_tag("Mount"); }
+-// Another group The Legend of Zelda: Breath of the Wild (SDK 20) uses: tag activate / deactivate events (bound to a kernel event that never fires; without the take-over the SDK's code reads a null pointer at sdk+0x3f2a78), the two-argument Mount,
+-//   Unmount, reading common / register info (all answered as no tag), the library state (1 = initialized) and Finalize
+-HLE_FORCE("_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag placed event; bound to a kernel event, never signalled", Result, h_nfp_AttachAct, void *ev, const NfpDeviceHandle *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+-HLE_FORCE("_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag removed event; bound to a kernel event, never signalled", Result, h_nfp_AttachDeact, void *ev, const NfpDeviceHandle *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+-HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE", "mount tag (two arguments): no tag", Result, h_nfp_Mount2, const NfpDeviceHandle *h, int model) { (void)h; (void)model; return nfp_no_tag("Mount"); }
+-HLE_FORCE("_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE", "unmount tag: no tag", Result, h_nfp_Unmount, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Unmount"); }
+-HLE_FORCE("_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE", "common info: no tag", Result, h_nfp_CommonInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetCommonInfo"); }
+-HLE_FORCE("_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE", "register info: no tag", Result, h_nfp_RegInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetRegisterInfo"); }
++HLE_FORCE("_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE", "start tag detection: finds the amiibo on the reader, if any", Result, h_nfp_Start, const NfpDeviceHandle *h) {
++    (void)h; pthread_mutex_lock(&g_nfp_mu);
++    nfp_lose_tag(NFP_STATE_SEARCH);
++    void *ev = nfp_find(); pthread_mutex_unlock(&g_nfp_mu);
++    nfp_signal(ev); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE", "stop tag detection; an amiibo the game found leaves the reader", Result, h_nfp_Stop, const NfpDeviceHandle *h) {
++    (void)h; pthread_mutex_lock(&g_nfp_mu);
++    void *ev = NULL;
++    if (nfp_has_tag()) { g_amiibo.placed = 0; ev = g_nfp_deactivate; LOG("nfp: detection stopped, the amiibo leaves the reader"); }
++    nfp_lose_tag(NFP_STATE_INIT); pthread_mutex_unlock(&g_nfp_mu);
++    nfp_signal(ev); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE", "device state: initialized / searching / tag found / removed / mounted", int, h_nfp_State, const NfpDeviceHandle *h) { (void)h; return atomic_load(&g_nfp_state); }
++HLE_FORCE("_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE", "tag info: the virtual amiibo's NTAG215 UID", Result, h_nfp_TagInfo, void *out, const NfpDeviceHandle *h) {
++    (void)h; if (!out) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (!nfp_has_tag()) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("GetTagInfo"); }
++    NfpTagInfo t; memset(&t, 0, sizeof t);
++    // A stable UID for each amiibo ID (the same figure every time): NXP's manufacturer byte, then six bytes of the ID's FNV-1a hash
++    uint64_t hash = 0xcbf29ce484222325ull; for (int i = 0; i < 8; i++) { hash ^= g_amiibo.id[i]; hash *= 0x100000001b3ull; }
++    t.uid[0] = 0x04; for (int i = 1; i < 7; i++) t.uid[i] = (uint8_t)(hash >> (8 * i));
++    t.uid_length = 7; t.protocol = 1; t.type = 2;   // NFC-A, type 2 (NTAG215)
++    pthread_mutex_unlock(&g_nfp_mu);
++    memcpy(out, &t, sizeof t); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE", "mount the amiibo on the reader", Result, h_nfp_Mount, const NfpDeviceHandle *h, int model, int target) {
++    (void)h; (void)target; pthread_mutex_lock(&g_nfp_mu);
++    if (!nfp_has_tag()) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("Mount"); }
++    nfp_lose_tag(NFP_STATE_MOUNTED); pthread_mutex_unlock(&g_nfp_mu);
++    LOG("nfp: amiibo mounted (model type %d)", model); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE", "mount the amiibo on the reader (two arguments)", Result, h_nfp_Mount2, const NfpDeviceHandle *h, int model) { return h_nfp_Mount(h, model, 3); }
++HLE_FORCE("_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE", "unmount the amiibo; an area set and not flushed is dropped", Result, h_nfp_Unmount, const NfpDeviceHandle *h) {
++    (void)h; pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("Unmount"); }
++    nfp_lose_tag(NFP_STATE_FOUND); pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE", "model info: the virtual amiibo's ID", Result, h_nfp_ModelInfo, void *out, const NfpDeviceHandle *h) {
++    (void)h; if (!out) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (!nfp_has_tag()) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("GetModelInfo"); }
++    NfpModelInfo m; memset(&m, 0, sizeof m);
++    const uint8_t *id = g_amiibo.id;
++    m.character_id[0] = id[0]; m.character_id[1] = id[1]; m.variant = id[2]; m.figure_type = id[3];
++    m.model_number = (uint16_t)(id[4] << 8 | id[5]); m.series = id[6];
++    pthread_mutex_unlock(&g_nfp_mu);
++    memcpy(out, &m, sizeof m); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE", "common info: today's date, the open area's write counter, a 216-byte area", Result, h_nfp_CommonInfo, void *out, const NfpDeviceHandle *h) {
++    (void)h; if (!out) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("GetCommonInfo"); }
++    NfpCommonInfo c; memset(&c, 0, sizeof c);
++    nfp_today(&c.last_write); c.write_counter = (uint16_t)g_amiibo.counter; c.version = 1; c.area_size = NFP_AREA_SIZE;
++    pthread_mutex_unlock(&g_nfp_mu);
++    memcpy(out, &c, sizeof c); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE", "register info: registered to the default Mii, the amiibo's name as nickname", Result, h_nfp_RegInfo, void *out, const NfpDeviceHandle *h) {
++    (void)h; if (!out) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("GetRegisterInfo"); }
++    NfpRegisterInfo r; memset(&r, 0, sizeof r);
++    hle_mii_default_charinfo(r.mii); nfp_today(&r.first_write);
++    snprintf(r.nickname, sizeof r.nickname, "%s", g_amiibo.name);
++    pthread_mutex_unlock(&g_nfp_mu);
++    memcpy(out, &r, sizeof r); return RES_OK;
++}
+ HLE_FORCE("_ZN2nn3nfp8GetStateEv", "amiibo library state: uninitialized (0) / initialized (1)", int, h_nfp_LibState, void) { return atomic_load(&g_nfp_lib); }
+-HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo library finalize; the host has no session", void, h_nfp_Fini, void) { atomic_store(&g_nfp_lib, 0); }
+-HLE_FORCE("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush tag: no tag", Result, h_nfp_Flush, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Flush"); }
+-HLE_FORCE("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "open application area: no tag", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) { (void)h; (void)id; return nfp_no_tag("OpenApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read application area: no tag", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)h; (void)sz; if (n) *n = 0; return nfp_no_tag("GetApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm", "write application area: no tag", Result, h_nfp_SetArea, const NfpDeviceHandle *h, const void *buf, uint64_t sz) { (void)h; (void)buf; (void)sz; return nfp_no_tag("SetApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp21CreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "create application area: no tag", Result, h_nfp_CreateArea, const NfpDeviceHandle *h, const void *info) { (void)h; (void)info; return nfp_no_tag("CreateApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "recreate application area: no tag", Result, h_nfp_RecreateArea, const NfpDeviceHandle *h, const void *info) { (void)h; (void)info; return nfp_no_tag("RecreateApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp26GetExtendedApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read extended application area: no tag", Result, h_nfp_GetAreaExt, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)n; (void)h; (void)sz; return nfp_no_tag("GetExtendedApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp26SetExtendedApplicationAreaERKNS0_12DeviceHandleEPKvm", "write extended application area: no tag", Result, h_nfp_SetAreaExt, const NfpDeviceHandle *h, const void *buf, uint64_t sz) { (void)h; (void)buf; (void)sz; return nfp_no_tag("SetExtendedApplicationArea"); }
+-HLE_FORCE("_ZN2nn3nfp30GetExtendedApplicationAreaInfoEPNS0_27ExtendedApplicationAreaInfoERKNS0_12DeviceHandleE", "extended application area info: no tag", Result, h_nfp_AreaExtInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetExtendedApplicationAreaInfo"); }
+-HLE_FORCE("_ZN2nn3nfp7RestoreERKNS0_12DeviceHandleE", "restore tag: no tag", Result, h_nfp_Restore, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Restore"); }
+-HLE_FORCE("_ZN2nn3nfp13StartRestorerEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo restorer applet: no tag", Result, h_nfp_Restorer, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; return nfp_no_tag("StartRestorer"); }
+-HLE_FORCE("_ZN2nn3nfp19StartGameDataEraserEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo game data eraser applet: no tag", Result, h_nfp_Eraser, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; return nfp_no_tag("StartGameDataEraser"); }
+-HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo nickname and owner settings applet: no tag", Result, h_nfp_Nick, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag) { (void)h; (void)reg; (void)p; (void)tag; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
+-HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoERKS4_", "amiibo nickname and owner settings applet (with the old register info): no tag", Result, h_nfp_Nick2, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag, const void *old) { (void)h; (void)reg; (void)p; (void)tag; (void)old; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
++HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo library finalize; the reader keeps its amiibo", void, h_nfp_Fini, void) {
++    pthread_mutex_lock(&g_nfp_mu); nfp_lose_tag(NFP_STATE_INIT); g_nfp_activate = g_nfp_deactivate = NULL; pthread_mutex_unlock(&g_nfp_mu);
++    atomic_store(&g_nfp_lib, 0);
++}
++HLE_FORCE("_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag placed event; signalled when the reader finds an amiibo", Result, h_nfp_AttachAct, void *ev, const NfpDeviceHandle *h) {
++    (void)h; hle_bind_system_event(ev, 0);
++    pthread_mutex_lock(&g_nfp_mu); g_nfp_activate = ev; pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag removed event; signalled when the amiibo leaves the reader", Result, h_nfp_AttachDeact, void *ev, const NfpDeviceHandle *h) {
++    (void)h; hle_bind_system_event(ev, 0);
++    pthread_mutex_lock(&g_nfp_mu); g_nfp_deactivate = ev; pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush: the open application area to its file", Result, h_nfp_Flush, const NfpDeviceHandle *h) {
++    (void)h; pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("Flush"); }
++    if (g_amiibo.area_open && g_amiibo.dirty) { g_amiibo.counter++; nfp_area_store(g_amiibo.area_id, g_amiibo.area, g_amiibo.counter); g_amiibo.dirty = 0; }
++    pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "open the application area of an access ID; none yet: the game creates it", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) {
++    (void)h; pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("OpenApplicationArea"); }
++    uint32_t counter = 0;
++    if (!nfp_area_load(id, g_amiibo.area, &counter)) { g_amiibo.area_open = 0; pthread_mutex_unlock(&g_nfp_mu); LOG("nfp: no application area for access ID %#x yet", id); return NFP_RES_AREA_NOT_CREATED; }
++    g_amiibo.area_open = 1; g_amiibo.area_id = id; g_amiibo.counter = counter; g_amiibo.dirty = 0;
++    pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read the open application area", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) {
++    (void)h; if (n) *n = 0;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("GetApplicationArea"); }
++    if (!g_amiibo.area_open) { pthread_mutex_unlock(&g_nfp_mu); return NFP_RES_AREA_NOT_CREATED; }
++    uint64_t k = sz < NFP_AREA_SIZE ? sz : NFP_AREA_SIZE;
++    if (buf) memcpy(buf, g_amiibo.area, k);
++    if (n) *n = k;
++    pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++HLE_FORCE("_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm", "write the open application area (kept at Flush)", Result, h_nfp_SetArea, const NfpDeviceHandle *h, const void *buf, uint64_t sz) {
++    (void)h; if (!buf || sz > NFP_AREA_SIZE) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag("SetApplicationArea"); }
++    if (!g_amiibo.area_open) { pthread_mutex_unlock(&g_nfp_mu); return NFP_RES_AREA_NOT_CREATED; }
++    memset(g_amiibo.area, 0, NFP_AREA_SIZE); memcpy(g_amiibo.area, buf, sz); g_amiibo.dirty = 1;
++    pthread_mutex_unlock(&g_nfp_mu); return RES_OK;
++}
++// Create writes the tag at once, as Horizon's does (no Flush needed); Recreate replaces an area that is there
++static Result nfp_create_area(const NfpAreaCreateInfo *info, int replace, const char *what) {
++    if (!info || info->size > NFP_AREA_SIZE || (info->size && !info->data)) return NFP_RES_INVALID_ARGUMENT;
++    pthread_mutex_lock(&g_nfp_mu);
++    if (atomic_load(&g_nfp_state) != NFP_STATE_MOUNTED) { pthread_mutex_unlock(&g_nfp_mu); return nfp_no_tag(what); }
++    uint8_t area[NFP_AREA_SIZE]; uint32_t counter = 0;
++    if (!replace && nfp_area_load(info->access_id, area, &counter)) { pthread_mutex_unlock(&g_nfp_mu); return NFP_RES_AREA_EXISTS; }
++    memset(area, 0, sizeof area); if (info->size) memcpy(area, info->data, info->size);
++    Result r = nfp_area_store(info->access_id, area, counter + 1);
++    if (g_amiibo.area_open && g_amiibo.area_id == info->access_id) { memcpy(g_amiibo.area, area, sizeof area); g_amiibo.counter = counter + 1; g_amiibo.dirty = 0; }
++    pthread_mutex_unlock(&g_nfp_mu);
++    LOG("nfp: application area for access ID %#x %s (%u bytes)", info->access_id, replace ? "recreated" : "created", info->size); return r;
++}
++HLE_FORCE("_ZN2nn3nfp21CreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "create the application area of an access ID", Result, h_nfp_CreateArea, const NfpDeviceHandle *h, const void *info) { (void)h; return nfp_create_area(info, 0, "CreateApplicationArea"); }
++HLE_FORCE("_ZN2nn3nfp23RecreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE", "recreate the application area of an access ID", Result, h_nfp_RecreateArea, const NfpDeviceHandle *h, const void *info) { (void)h; return nfp_create_area(info, 1, "RecreateApplicationArea"); }
++HLE_FORCE("_ZN2nn3nfp26GetExtendedApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read extended application area: not on the host's tags", Result, h_nfp_GetAreaExt, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)n; (void)h; (void)sz; return nfp_no_tag("GetExtendedApplicationArea"); }
++HLE_FORCE("_ZN2nn3nfp26SetExtendedApplicationAreaERKNS0_12DeviceHandleEPKvm", "write extended application area: not on the host's tags", Result, h_nfp_SetAreaExt, const NfpDeviceHandle *h, const void *buf, uint64_t sz) { (void)h; (void)buf; (void)sz; return nfp_no_tag("SetExtendedApplicationArea"); }
++HLE_FORCE("_ZN2nn3nfp30GetExtendedApplicationAreaInfoEPNS0_27ExtendedApplicationAreaInfoERKNS0_12DeviceHandleE", "extended application area info: not on the host's tags", Result, h_nfp_AreaExtInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetExtendedApplicationAreaInfo"); }
++HLE_FORCE("_ZN2nn3nfp7RestoreERKNS0_12DeviceHandleE", "restore the tag from its backup: a virtual tag needs none", Result, h_nfp_Restore, const NfpDeviceHandle *h) { (void)h; return nfp_has_tag() ? RES_OK : nfp_no_tag("Restore"); }
++// The amiibo settings applets are not on the host: each answers as the player backing out of it, nothing changed
++HLE_FORCE("_ZN2nn3nfp13StartRestorerEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo restorer applet: not on the host, cancelled", Result, h_nfp_Restorer, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; DM_APPLET("amiibo restorer"); return RES_OK; }
++HLE_FORCE("_ZN2nn3nfp19StartGameDataEraserEPNS0_12DeviceHandleERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo game data eraser applet: not on the host, cancelled", Result, h_nfp_Eraser, NfpDeviceHandle *h, const void *p, const void *tag) { (void)h; (void)p; (void)tag; DM_APPLET("amiibo game data eraser"); return RES_OK; }
++HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo nickname and owner settings applet: not on the host, cancelled", Result, h_nfp_Nick, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag) { (void)h; (void)reg; (void)p; (void)tag; DM_APPLET("amiibo nickname and owner settings"); if (changed) *changed = 0; return RES_OK; }
++HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoERKS4_", "amiibo nickname and owner settings applet (with the old register info): not on the host, cancelled", Result, h_nfp_Nick2, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag, const void *old) { (void)h; (void)reg; (void)p; (void)tag; (void)old; DM_APPLET("amiibo nickname and owner settings"); if (changed) *changed = 0; return RES_OK; }
++
++// The front end's in-game menu (front.h): any thread
++// A game that imports the amiibo library (main or an NRO) offers amiibo from the start, so a figure can be placed before the game's own amiibo screen
++int dm_amiibo_offered(void) { return atomic_load(&g_nfp_lib) == 1 || dm_game_imports("_ZN2nn3nfp"); }
++void dm_amiibo_place(const char *id_hex, const char *name) {
++    uint8_t id[8];
++    int bad = !id_hex || strlen(id_hex) != 16;
++    for (int i = 0; i < 8 && !bad; i++) { unsigned v; if (sscanf(id_hex + 2 * i, "%2x", &v) != 1) bad = 1; else id[i] = (uint8_t)v; }
++    if (bad) { LOG("[RED] nfp: %s is not an amiibo ID (16 hex digits)", id_hex ? id_hex : "(null)"); return; }
++    pthread_mutex_lock(&g_nfp_mu);
++    void *off = NULL;
++    if (nfp_has_tag()) { nfp_lose_tag(NFP_STATE_SEARCH); off = g_nfp_deactivate; }   // another figure was there: it leaves, and the reader finds this one
++    g_amiibo.placed = 1; memcpy(g_amiibo.id, id, 8);
++    // The nickname holds 10 characters: cut the name there, at a character boundary
++    size_t k = 0; int chars = 0; const char *s = name ? name : "";
++    while (s[k] && chars < 10 && k < sizeof g_amiibo.name - 5) { k++; while ((s[k] & 0xc0) == 0x80) k++; chars++; }
++    memcpy(g_amiibo.name, s, k); g_amiibo.name[k] = 0;
++    LOG("nfp: amiibo %s (%s) placed on the reader", id_hex, s);
++    void *ev = nfp_find(); pthread_mutex_unlock(&g_nfp_mu);
++    nfp_signal(off); nfp_signal(ev);
++}
++void dm_amiibo_remove(void) {
++    pthread_mutex_lock(&g_nfp_mu);
++    void *ev = NULL;
++    if (g_amiibo.placed) LOG("nfp: amiibo taken off the reader");
++    g_amiibo.placed = 0;
++    if (nfp_has_tag()) { nfp_lose_tag(NFP_STATE_REMOVED); ev = g_nfp_deactivate; }
++    pthread_mutex_unlock(&g_nfp_mu);
++    nfp_signal(ev);
++}
++int dm_amiibo_placed(char out_hex[17]) {
++    pthread_mutex_lock(&g_nfp_mu);
++    int placed = g_amiibo.placed;
++    if (placed && out_hex) for (int i = 0; i < 8; i++) snprintf(out_hex + 2 * i, 3, "%02x", g_amiibo.id[i]);
++    pthread_mutex_unlock(&g_nfp_mu);
++    return placed;
++}
+ 
+ // ---------- vi: vsync event ----------
+ // The game passes a SystemEventType; after binding, a host thread fires it at 60 Hz, at 120 while 120 fps holds one tick of 1/120 s (nvn_vsync_hz; DM_VSYNC_HZ fixes another rate). While the display link presents, the event follows its ticks, as a
+diff --git a/dm/host/tests/t_nfc.c b/dm/host/tests/t_nfc.c
+index d1b257c..abee796 100644
+--- a/dm/host/tests/t_nfc.c
++++ b/dm/host/tests/t_nfc.c
+@@ -19,6 +19,11 @@ void hle_signal_system_event(void *ev) { (void)ev; }
+ uint64_t hle_system_event_binding(void *ev) { (void)ev; abort(); }
+ int hle_signal_system_event_binding(uint64_t binding) { (void)binding; abort(); }
+ uint32_t hle_hid_connected_npad(void) { return 0; }
++// The activate and deactivate events of a virtual amiibo: counted per event
++static void *signalled[16]; static int nsignalled;
++int hle_signal_bound_system_event(void *ev) { if (nsignalled < 16) signalled[nsignalled++] = ev; return 1; }
++static int signals(void *ev) { int n = 0; for (int i = 0; i < nsignalled; i++) n += signalled[i] == ev; return n; }
++void hle_mii_default_charinfo(void *out) { memset(out, 0x4d, 0x58); }
+ void dm_host_helper_qos(qos_class_t q) { (void)q; }
+ static void *forced(const hle_force_ent *e, const char *name) {
+     // ASan places redzones between section globals; inspect the emitted registration
+@@ -28,6 +33,80 @@ static void *forced(const hle_force_ent *e, const char *name) {
+     return e->fn;
+ }
+ 
++// A virtual amiibo from the in-game menu (dm_amiibo_place): found at the game's search, read, its application area created and written, then lifted when the game stops detection
++static void virtual_amiibo(void) {
++    void (*nfp_init)(void) = forced(&hle_force_h_nfp_Init, "_ZN2nn3nfp10InitializeEv");
++    void (*nfp_fini)(void) = forced(&hle_force_h_nfp_Fini, "_ZN2nn3nfp8FinalizeEv");
++    Result (*start)(const NfpDeviceHandle *) = forced(&hle_force_h_nfp_Start, "_ZN2nn3nfp14StartDetectionERKNS0_12DeviceHandleE");
++    Result (*stop)(const NfpDeviceHandle *) = forced(&hle_force_h_nfp_Stop, "_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE");
++    int (*device_state)(const NfpDeviceHandle *) = forced(&hle_force_h_nfp_State, "_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE");
++    Result (*tag_info)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_TagInfo, "_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE");
++    Result (*model_info)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_ModelInfo, "_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE");
++    Result (*mount)(const NfpDeviceHandle *, int, int) = forced(&hle_force_h_nfp_Mount, "_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE");
++    Result (*unmount)(const NfpDeviceHandle *) = forced(&hle_force_h_nfp_Unmount, "_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE");
++    Result (*common_info)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_CommonInfo, "_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE");
++    Result (*register_info)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_RegInfo, "_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE");
++    Result (*attach_on)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_AttachAct, "_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE");
++    Result (*attach_off)(void *, const NfpDeviceHandle *) = forced(&hle_force_h_nfp_AttachDeact, "_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE");
++    Result (*open_area)(const NfpDeviceHandle *, uint32_t) = forced(&hle_force_h_nfp_OpenArea, "_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj");
++    Result (*get_area)(void *, uint64_t *, const NfpDeviceHandle *, uint64_t) = forced(&hle_force_h_nfp_GetArea, "_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm");
++    Result (*set_area)(const NfpDeviceHandle *, const void *, uint64_t) = forced(&hle_force_h_nfp_SetArea, "_ZN2nn3nfp18SetApplicationAreaERKNS0_12DeviceHandleEPKvm");
++    Result (*create_area)(const NfpDeviceHandle *, const void *) = forced(&hle_force_h_nfp_CreateArea, "_ZN2nn3nfp21CreateApplicationAreaERKNS0_12DeviceHandleERKNS0_25ApplicationAreaCreateInfoE");
++    Result (*flush)(const NfpDeviceHandle *) = forced(&hle_force_h_nfp_Flush, "_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE");
++    if (fails) return;
++    char dir[] = "/tmp/t_nfc_amiibo_XXXXXX";
++    CHECK(mkdtemp(dir) != NULL, "a folder for the amiibo's application areas");
++    setenv("DM_AMIIBO_DIR", dir, 1);
++    NfpDeviceHandle h = {NFP_DEVICE_ID, {0}};
++    static char on_event[64], off_event[64];   // the game's SystemEventType objects
++    CHECK(!dm_amiibo_offered(), "no amiibo menu before the game initializes the library");
++    nfp_init();
++    CHECK(dm_amiibo_offered(), "the menu offers amiibo once the library is initialized");
++    CHECK(attach_on(on_event, &h) == RES_OK && attach_off(off_event, &h) == RES_OK, "the game attaches its activate and deactivate events");
++    // Mario - Wedding: character 0x0000, variant 0, figure 0, model 0x0371, series 1 (Super Mario)
++    dm_amiibo_place("0000000003710102", "Mario - Wedding");
++    char placed[17] = {0};
++    CHECK(dm_amiibo_placed(placed) && !strcmp(placed, "0000000003710102"), "the menu sees the amiibo it placed");
++    CHECK(device_state(&h) == NFP_STATE_INIT && signals(on_event) == 0, "a placed amiibo waits for the game to search");
++    CHECK(start(&h) == RES_OK && device_state(&h) == NFP_STATE_FOUND && signals(on_event) == 1, "the search finds it and signals the activate event");
++    NfpTagInfo t1, t2; memset(&t1, 0, sizeof t1); memset(&t2, 0xff, sizeof t2);
++    CHECK(tag_info(&t1, &h) == RES_OK && tag_info(&t2, &h) == RES_OK && !memcmp(&t1, &t2, sizeof t1), "the same amiibo always has the same tag");
++    CHECK(t1.uid_length == 7 && t1.uid[0] == 0x04 && t1.protocol == 1 && t1.type == 2, "a 7-byte NXP UID on an NFC-A type 2 tag");
++    CHECK(mount(&h, 0, 3) == RES_OK && device_state(&h) == NFP_STATE_MOUNTED, "the found amiibo mounts");
++    unsigned char m[0x40]; memset(m, 0xff, sizeof m);
++    CHECK(model_info(m, &h) == RES_OK, "the mounted amiibo has a model");
++    CHECK(m[0] == 0x00 && m[1] == 0x00 && m[2] == 0 && m[3] == 0 && m[4] == 0x71 && m[5] == 0x03 && m[6] == 0x01 && m[7] == 0,
++          "model info: the character's bytes, then the model number as a number, the series");
++    NfpCommonInfo c; CHECK(common_info(&c, &h) == RES_OK && c.area_size == 216 && c.last_write.year >= 2024, "common info: a 216-byte application area");
++    NfpRegisterInfo r; CHECK(register_info(&r, &h) == RES_OK && !strcmp(r.nickname, "Mario - We") && r.mii[0] == 0x4d, "registered to the default Mii, nickname cut to 10 characters");
++    CHECK(open_area(&h, 0x1234) == (115u | 128u << 9), "no area yet for this game: the game creates one");
++    NfpAreaCreateInfo info = {0x1234, 0, "abc", 3, {0}};
++    CHECK(create_area(&h, &info) == RES_OK, "the game creates its area");
++    CHECK(create_area(&h, &info) == (115u | 168u << 9), "a second create finds it there");
++    CHECK(open_area(&h, 0x1234) == RES_OK, "the created area opens");
++    unsigned char area[216]; uint64_t n = 0; memset(area, 0x5a, sizeof area);
++    CHECK(get_area(area, &n, &h, sizeof area) == RES_OK && n == 216 && !memcmp(area, "abc", 3) && area[3] == 0 && area[215] == 0, "the area holds the initial data, then zeros");
++    CHECK(set_area(&h, "xyz", 3) == RES_OK && flush(&h) == RES_OK, "the game writes its area and flushes it");
++    CHECK(set_area(&h, "lost", 4) == RES_OK && unmount(&h) == RES_OK, "an area set and not flushed is dropped at unmount");
++    CHECK(mount(&h, 0, 3) == RES_OK && open_area(&h, 0x1234) == RES_OK && get_area(area, &n, &h, sizeof area) == RES_OK && !memcmp(area, "xyz", 3),
++          "the flushed area is there at the next mount");
++    CHECK(common_info(&c, &h) == RES_OK && c.write_counter == 2, "two writes: the create and the flush");
++    CHECK(open_area(&h, 0x5678) == (115u | 128u << 9), "another game's access ID has an area of its own");
++    CHECK(stop(&h) == RES_OK && device_state(&h) == NFP_STATE_INIT && signals(off_event) == 1, "stopping detection lifts the amiibo and signals the deactivate event");
++    CHECK(!dm_amiibo_placed(NULL), "a tap: the amiibo is off the reader once the game is done");
++    CHECK(start(&h) == RES_OK && device_state(&h) == NFP_STATE_SEARCH && signals(on_event) == 1, "the next search finds nothing until another pick");
++    dm_amiibo_place("0002000003720102", "Peach - Wedding");
++    CHECK(device_state(&h) == NFP_STATE_FOUND && signals(on_event) == 2, "an amiibo placed during a search is found at once");
++    dm_amiibo_remove();
++    CHECK(device_state(&h) == NFP_STATE_REMOVED && signals(off_event) == 2 && !dm_amiibo_placed(NULL), "taken off from the menu: tag removed");
++    CHECK(tag_info(&t1, &h) == (115u | 97u << 9), "no tag once it is removed");
++    dm_amiibo_place("zz", "nothing");
++    CHECK(!dm_amiibo_placed(NULL), "an ID that is not 16 hex digits places nothing");
++    stop(&h); nfp_fini();
++    CHECK(!dm_amiibo_offered(), "no amiibo menu after the library is finalized");
++    unsetenv("DM_AMIIBO_DIR");
++}
++
+ int main(void) {
+     void (*init)(void) = forced(&hle_force_h_nfc_Init, "_ZN2nn3nfc10InitializeEv");
+     void (*fini)(void) = forced(&hle_force_h_nfc_Fini, "_ZN2nn3nfc8FinalizeEv");
+@@ -82,6 +161,7 @@ int main(void) {
+     nfp_init();
+     CHECK(nfp_lib() == 1, "NFP initializes again after finalization");
+     nfp_fini();
++    virtual_amiibo();
+     CHECK(lookups == 0, "NFC and NFP hooks do not call an original SDK service path");
+     printf("NFC availability: %d checks, %d failed\n", checks, fails);
+     return fails != 0;
+diff --git a/docs/development.md b/docs/development.md
+index c145606..98ffcae 100644
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -12,7 +12,7 @@ The README covers packing and playing. This page is for working on nxnative itse
+ | Audio | Games that carry the SDK's audio renderer (Mario) run it in-process; games that use AudioOut directly (Engage: Wwise) feed it straight. With Core Audio enabled (default on iOS, `DM_AUDIO=1` on the Mac), the [silent sink keeps releasing PCM buffers while a device starts or retries](reference/audio.md#a-blocked-audio-device-start-freezes-the-game). |
+ | Input | iOS: the touch gamepad (hidden while a physical controller is connected) and physical controllers; shaking the phone shakes the controller (its six-axis sensor, `hle_hid.c`; the accelerometer in `DmGamepad.m`, threshold `DM_SHAKE_G`, 1.5 G by default). Mac: scripted input (`DM_KEYS=<seconds>:<button>,…`, `Shake` for a shake, with `DM_KBD=<text>` answering the system keyboard; `DM_REC=<file>` records what the player does in that syntax, [05](agents/05-debugging.md#scripted-input-and-thread-scheduling)) or `DM_WINDOW=1` for a window with keyboard input (Space shakes) and physical controllers (face buttons by position as on the iPhone, a Nintendo pad by its labels: `pad_apple.h`). On the Mac and iOS each controller is a player of its own, for local co-op: the first one connected is player 1, together with the keyboard (iOS: the touch gamepad and the phone's gyro), the next player 2, and so on up to 8 (`pad_slots.h`); a controller that is removed frees its player and gets it back when it reconnects, and the log names each one's player and npad (`controller 'Xbox Wireless Controller' connected: player 2 (npad 1)`). Player 1 is the Handheld npad in handheld mode and No1 docked, player n is No n; the game's supported npad ids decide how many play (`hle_hid.c`): a one-player game gets every controller as player 1, and a controller past a game's last player is not used. `DM_PAD_MERGE=1` makes every controller player 1, as before (on iOS from `Documents/env.txt`); `DM_KBD_PLAYER=own` makes the keyboard player 1 on its own, with the controllers from player 2 on. The window goes fullscreen from its green button or ⌃⌘F; `DM_FULLSCREEN=1` starts it that way and `DM_SCREEN=<NSScreenNumber>` opens it on that screen instead of the one macOS picks. In fullscreen, a screen whose refresh rate is not a multiple of the game's (144 or 165 Hz) runs at one that is (120 Hz) until the window leaves fullscreen; `DM_SCREEN_MATCH=0` keeps its rate. The drawable follows the window in pixels (fullscreen at the screen's resolution); `DM_METAL_HUD=1` shows Apple's performance HUD (on the iPhone too, from `Documents/env.txt`). The left mouse button is the touchscreen, on the 16:9 picture. Motion: a controller with a gyroscope drives its player's six-axis sensor (`motion_apple.h` → `dm_motion_set`, `hle_hid.c`; orientation from the gyro with tilt correction toward gravity, `motion_fusion.h`), and on iOS the phone's own device motion drives player 1's while no controller supplies fresh motion (`DmGamepad.m`, in the Switch frame: the pad view's own frame on iOS 27 and later (`deviceMotionBody`), turned for the screen's orientation before that ([The phone's motion in the picture's frame](reference/services.md#the-phones-motion-in-the-pictures-frame)); `DM_PHONE_MOTION=0|1|auto`; `1` selects only the phone). On the Mac, a Switch Pro Controller whose GameController motion is empty can use passive HID reports instead (`motion_pro_mac.h`; `DM_MOTION_HID=0` turns this reader off). This requires exactly one Pro in each API so it can use the same player slot without guessing; multiple Pros retain GameController input. Raw HID has its own orientation and nominal sensor scales; hardware validation of the reworked reader remains open ([Pro Controller fallback](reference/services.md#switch-pro-controller-advertises-motion-but-sends-zeroes)). `DM_MOTION_AXES` / `DM_MOTION_ACC_SIGN` apply only to GameController. Each source keeps its own orientation. Without live motion the sensor lies flat as before. `DM_MOTION_LOG=1` logs player 1's mapped sample once a second per source; `DM_MOTION_AXES` (e.g. `x,-z,y`) and `DM_MOTION_ACC_SIGN=-1` remap a controller whose axes differ, `DM_MOTION_GAIN` sets the tilt correction (0.5), `DM_MOTION=0` turns motion off (the NSP script's `--no-motion` builds it in). The console's own sensor (`SevenSixAxisSensor`, read in handheld mode) still reports no states. In handheld mode the touches also drive `hid::GetGestureStates` (taps, presses, pans, swipes, pinches and rotations recognized by the host, `hle_touch.c`) |
+ | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app. A settings screen comes before the game (`Launcher.swift`, drawn from `dm/launcher.json`, which `dm/games/settings.py` writes from `dm/games/settings.tsv`); the host's loading starts at app launch meanwhile, and the frame rate and render scale go into the frame step state when the game starts (`loader.c` `dm_fps_state_apply`) |
+-| Known gaps | Conditional render is always drawn; [indirect-count multi-draws](reference/rendering.md#indirect-count-multi-draws) can wait for a GPU-written count when the records need conversion, cannot be GPU-masked, or exceed the mask table capacity; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
++| Known gaps | Conditional render is always drawn; [indirect-count multi-draws](reference/rendering.md#indirect-count-multi-draws) can wait for a GPU-written count when the records need conversion, cannot be GPU-masked, or exceed the mask table capacity; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). Amiibo are virtual, placed from NX2Apple's in-game menu ([Virtual amiibo](reference/services.md#virtual-amiibo)); the extended application area is not there. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
+ 
+ On the Mac, `DM_KEYMAP=<name>=<key code>,…` puts a button, a stick direction (the right stick too, on no key by default) or `Shake` on another key, and `DM_PAD_MAP=<name>=<name>,…` changes what a controller's buttons send (`A=B,B=A` swaps them; `input_map.h`).
+ 
+diff --git a/docs/reference/services.md b/docs/reference/services.md
+index 03afaaa..c084ff4 100644
+--- a/docs/reference/services.md
++++ b/docs/reference/services.md
+@@ -429,7 +429,7 @@ Most service calls can be found before they crash, before the first boot or the
+ ### SDK 20 six-axis sensor and amiibo (`nfp`) calls
+ 
+ - **Symptom:** SDK 20 calls that reach a service; `nfp`'s `AttachActivateEvent` / `AttachDeactivateEvent` crashed in the SDK at `sdk+0x3f2a78`.
+-- **Fix:** the console six-axis sensor (`hid::*SevenSixAxisSensor*`) reports zero states; more `nfp` calls are hooked: `AttachActivateEvent` / `AttachDeactivateEvent`, the two-argument `Mount`, `Unmount`, `GetCommonInfo`, `GetRegisterInfo`, `GetState`, `Finalize`. The host answers as a console with no amiibo.
++- **Fix:** the console six-axis sensor (`hid::*SevenSixAxisSensor*`) reports zero states; more `nfp` calls are hooked: `AttachActivateEvent` / `AttachDeactivateEvent`, the two-argument `Mount`, `Unmount`, `GetCommonInfo`, `GetRegisterInfo`, `GetState`, `Finalize`. The host answers as a console with no amiibo on its reader until the player places one ([Virtual amiibo](#virtual-amiibo)).
+ - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (1.9.0, SDK 20.5.22). [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) 1.2.1 already initialized `nn::nfp` at boot ([A game update imports SDK calls the base game did not](#a-game-update-imports-sdk-calls-the-base-game-did-not)).
+ 
+ ### `nfp`'s extended application area
+@@ -447,6 +447,14 @@ Most service calls can be found before they crash, before the first boot or the
+ - **Open:** `nfp` answers as a console with NFC on and no amiibo ([SDK 20 six-axis sensor and amiibo (`nfp`) calls](#sdk-20-six-axis-sensor-and-amiibo-nfp-calls)), so a game that asks both libraries gets two different consoles, and the game's message points to a System Settings switch the host does not have. Answering `IsNfcEnabled` true would match `nfp`, but the game's amiibo path after it has not been run.
+ - **Found on:** [Hyrule Warriors: Definitive Edition](../../dm/games/0100AE00096EA000/README.md) 1.0.1 (SDK 3.5.1), entering amiibo from the title screen (GitHub issue #708). With the fix, the message opens, closes and opens again.
+ 
++### Virtual amiibo
++
++- **Symptom:** a game's amiibo features could not be used: its "touch an amiibo" screen waited for a tag that never came, as on a console with no figure at hand.
++- **Cause:** the host had no NFC reader and its `nfp` hooks answered "tag not found" to everything. A game reads only an amiibo's ID from the tag (character, variant, figure type, model number and series: its model info), the tag's UID, and the application area it keeps there; the ID is public, so no figure's dump and no key is needed.
++- **Fix:** `hle_sdk16.c`'s reader holds a virtual amiibo that the front end places by its ID and name (`dm_amiibo_place`, `front.h`). The game finds it at its search (the activate event is signalled, or `GetDeviceState` says tag found when it polls), mounts it and reads `GetTagInfo` (a 7-byte NXP UID derived from the ID, so one figure always has the same one; NFC-A, type 2), `GetModelInfo` (the character's two bytes as the tag has them, the model number as a number), `GetCommonInfo` and `GetRegisterInfo` (the default Mii of `hle_mii.c`, the amiibo's name cut to 10 characters as nickname). When the game stops detection after reading it, the amiibo leaves the reader, as a figure lifted after a tap; `dm_amiibo_remove` takes it off at once and signals the deactivate event. Application areas are kept per access ID, so one virtual amiibo holds every game's at once: `<DM_AMIIBO_DIR>/<ID>/<access ID>.bin`, the 216 bytes then the write counter, written at `Flush` and at `CreateApplicationArea` / `RecreateApplicationArea`, an area set and not flushed being dropped at `Unmount`. `DM_AMIIBO_DIR` defaults to an `amiibo` folder beside `DM_SAVE`; NX2Apple's shell sets `Documents/amiibo`. The amiibo settings applets are not on the host and answer as cancelled. `dm/host/tests/t_nfc.c` runs a figure through the whole sequence.
++- **Open:** the in-game menu that places an amiibo is NX2Apple's Windows launcher's (`frontend-qt/nspb_qt/win/ios/Launcher.m`, with the list of amiibo from AmiiboAPI); `GameMenu.swift` has none yet. The extended application area (Kirby Air Riders) is not on the virtual tags. Each game's own use still needs a run: none had been played with an amiibo at this change.
++- **Found on:** [Super Mario Odyssey](../../dm/games/0100000000010000/README.md) (LosDaemons13/NX2Apple), whose amiibo give costumes, invincibility, a heart, coin and Power Moon locations.
++
+ ### The amiibo library's state before Initialize
+ 
+ - **Symptom:** `game called nn::diag abort: Result 0, call site sdk+0x13ce58` in the middle of play, from `nn::os::TryWaitSystemEvent` on an event that was never set up (backtrace `main+0x1fb9920` in Tears of the Kingdom 1.4.3).
