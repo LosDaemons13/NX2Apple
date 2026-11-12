@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Thu, 12 Nov 2026 01:12:34 +0100
+Subject: [PATCH] shader tables: c1_guard.py and cb_extent.py show their
+ progress
+
+After the compile, dmsh_build.py removes its progress file and runs
+c1_guard.py and cb_extent.py over every shader of the library. The build
+kept showing the compile's last count, "compiling: 99%, 42,848/42,848
+shaders", for as long as they ran: over 20 minutes for Ocarina of Time on
+Windows, where they ran on one core.
+
+Their environment still names the progress file (DMSH_PROGRESS), so
+table_progress.mapped runs the pool with imap, in the same order as map,
+and writes each tool's step there at most every half second:
+"final check: c1 reads" and "final check: uniform reads". ShaderWatch
+shows a step other than the compile's as it is. Without DMSH_PROGRESS, or
+with a pool that has no imap, it is the pool's map as before.
+
+Upstream-Status: pending
+Reason: the build showed "compiling: 99%" for 20 minutes or more after the last shader, and players thought it had stopped
+Issue: none yet (LosDaemons13/NX2Apple, a Windows build of The Legend of Zelda: Ocarina of Time)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ dm/gfx/tools/c1_guard.py              |  3 +-
+ dm/gfx/tools/cb_extent.py             |  3 +-
+ dm/gfx/tools/table_progress.py        | 29 +++++++++++++++
+ dm/tools/tests/test_table_progress.py | 52 +++++++++++++++++++++++++++
+ scripts/build_ipa_from_nsp.py         |  2 ++
+ 5 files changed, 87 insertions(+), 2 deletions(-)
+ create mode 100644 dm/gfx/tools/table_progress.py
+ create mode 100644 dm/tools/tests/test_table_progress.py
+
+diff --git a/dm/gfx/tools/c1_guard.py b/dm/gfx/tools/c1_guard.py
+index 6d5cafb..d11fe8a 100755
+--- a/dm/gfx/tools/c1_guard.py
++++ b/dm/gfx/tools/c1_guard.py
+@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+ import romfs   # noqa: E402
+ import shader_lib   # noqa: E402
++import table_progress   # noqa: E402
+ 
+ 
+ ACCESS = re.compile(r"\b[a-z]+_c1\)\._m0\[([^\]]+)\]")
+@@ -231,7 +232,7 @@ def main():
+     version_dir = str(shader_lib.view(lib))   # its folder or its one file, read in place
+     jobs = [(version_dir, name) for name in outputs(version_dir, "metal")]
+     with multiprocessing.Pool() as pool:   # map keeps the sorted order, so the list is the same as one core's
+-        keys = [key for key in pool.map(unproven, jobs, chunksize=64) if key]
++        keys = [key for key in table_progress.mapped(pool, unproven, jobs, "final check: c1 reads") if key]
+     os.makedirs(os.path.dirname(output), exist_ok=True)
+     with open(output, "w", encoding="utf-8", newline="") as stream:
+         stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+diff --git a/dm/gfx/tools/cb_extent.py b/dm/gfx/tools/cb_extent.py
+index 916196c..d5d8a31 100644
+--- a/dm/gfx/tools/cb_extent.py
++++ b/dm/gfx/tools/cb_extent.py
+@@ -20,6 +20,7 @@ import dmsh_abi as abi   # noqa: E402
+ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tools'))
+ import romfs   # noqa: E402
+ import shader_lib   # noqa: E402
++import table_progress   # noqa: E402
+ 
+ MAX = 65536
+ 
+@@ -102,7 +103,7 @@ def main():
+     lib, output = map(os.path.abspath, sys.argv[1:])
+     version_dir = str(shader_lib.view(lib))   # its folder or its one file, read in place
+     paths = [os.path.join(version_dir, n) for n in outputs(version_dir, "json") if n.endswith("_b.json")]
+-    with multiprocessing.Pool() as pool: rows = [r for r in pool.map(row, paths, chunksize=64) if r]
++    with multiprocessing.Pool() as pool: rows = [r for r in table_progress.mapped(pool, row, paths, "final check: uniform reads") if r]
+     slots, ro = sum(len(re.findall(r"(?<![fs\w])\d+:", r.split("\t", 1)[1])) for r in rows), sum(len(re.findall(r"\bs\d+", r.split("\t", 1)[1])) for r in rows)
+     os.makedirs(os.path.dirname(output), exist_ok=True)
+     with open(output, "w", encoding="utf-8", newline="") as stream:
+diff --git a/dm/gfx/tools/table_progress.py b/dm/gfx/tools/table_progress.py
+new file mode 100644
+index 0000000..7997d80
+--- /dev/null
++++ b/dm/gfx/tools/table_progress.py
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++# table_progress.py: the progress of c1_guard.py and cb_extent.py, which read every shader of a library after dmsh_build.py's compile (minutes for a large game: Ocarina of Time's
++# 42,848 shaders took over 20 on one Windows core). dmsh_build.py removes its progress file before it runs them and their environment still names it (DMSH_PROGRESS), so each tool
++# writes its own step there in the same form ({"step", "done", "total"}), and build_ipa_from_nsp.py's ShaderWatch shows that step instead of leaving the compile's last count.
++import json
++import os
++import time
++
++
++def mapped(pool, fn, jobs, step, chunksize=64):
++    """pool.map(fn, jobs) in the same order, writing the step's count to DMSH_PROGRESS at most every half second and once at the end. A pool without imap gives its map"""
++    path, total = os.environ.get("DMSH_PROGRESS"), len(jobs)
++    if not path or not hasattr(pool, "imap"): return pool.map(fn, jobs, chunksize=chunksize)
++    out, last = [], 0.0
++    write(path, step, 0, total)
++    for result in pool.imap(fn, jobs, chunksize=chunksize):
++        out.append(result)
++        now = time.time()
++        if now - last >= 0.5 or len(out) == total:
++            last = now
++            write(path, step, len(out), total)
++    return out
++
++
++def write(path, step, done, total):
++    try:
++        with open(path + ".tmp", "w") as stream: json.dump({"step": step, "done": done, "total": total}, stream)
++        os.replace(path + ".tmp", path)
++    except OSError: pass   # progress never stops the build
+diff --git a/dm/tools/tests/test_table_progress.py b/dm/tools/tests/test_table_progress.py
+new file mode 100644
+index 0000000..46b824f
+--- /dev/null
++++ b/dm/tools/tests/test_table_progress.py
+@@ -0,0 +1,52 @@
++"""c1_guard.py and cb_extent.py write their progress where dmsh_build.py's was (table_progress.py), and the NSP script shows it (ShaderWatch)."""
++import json
++import os
++import sys
++import tempfile
++import unittest
++from multiprocessing.dummy import Pool
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(ROOT / 'dm/gfx/tools'))
++import table_progress  # noqa: E402
++
++
++class Mapped(unittest.TestCase):
++    def setUp(self):
++        self.tmp = Path(tempfile.mkdtemp(prefix='table-progress-'))
++        self.path = self.tmp / 'progress.json'
++
++    def tearDown(self):
++        for p in self.tmp.iterdir(): p.unlink()
++        self.tmp.rmdir()
++
++    def test_the_results_keep_their_order_and_the_last_count_is_written(self):
++        with mock.patch.dict(os.environ, {'DMSH_PROGRESS': str(self.path)}), Pool(4) as pool:
++            got = table_progress.mapped(pool, lambda n: n * n, list(range(200)), 'final check: uniform reads', chunksize=8)
++        self.assertEqual(got, [n * n for n in range(200)])
++        self.assertEqual(json.loads(self.path.read_text()), {'step': 'final check: uniform reads', 'done': 200, 'total': 200})
++        self.assertFalse((self.tmp / 'progress.json.tmp').exists())
++
++    def test_without_a_progress_file_or_imap_it_is_the_pool_map(self):
++        with mock.patch.dict(os.environ, {}, clear=False), Pool(2) as pool:
++            os.environ.pop('DMSH_PROGRESS', None)
++            self.assertEqual(table_progress.mapped(pool, str, [1, 2], 'step'), ['1', '2'])
++        self.assertFalse(self.path.exists())
++
++        class MapOnly:
++            def map(self, fn, jobs, chunksize=1): return [fn(j) for j in jobs]
++        with mock.patch.dict(os.environ, {'DMSH_PROGRESS': str(self.path)}):
++            self.assertEqual(table_progress.mapped(MapOnly(), str, [3], 'step'), ['3'])
++
++    @unittest.skipIf(os.name == 'nt', 'the NSP script imports fcntl')
++    def test_the_nsp_script_shows_the_step(self):
++        sys.path.insert(0, str(ROOT / 'scripts')); sys.path.insert(0, str(ROOT / 'dm/tools'))
++        import build_ipa_from_nsp as nsp
++        table_progress.write(str(self.path), 'final check: c1 reads', 5, 9)
++        self.assertEqual(nsp.ShaderWatch(self.path)(), {'step': 'final check: c1 reads', 'done': 5, 'total': 9, 'unit': 'shaders', 'note': ''})
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index c29bded..e642c8a 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -2551,6 +2551,8 @@ class ShaderWatch:
+         cached, misses = p.get('cached', 0), p.get('misses')
+         if p.get('step') == 'cache check':
+             return {'step': 'cache check', 'done': p['done'], 'total': p['total'], 'unit': 'shaders', 'note': f'{cached:,} cached'}
++        if p.get('step') not in (None, 'compiling'):   # after the compile, c1_guard.py and cb_extent.py write their own step (table_progress.py)
++            return {'step': str(p['step']), 'done': p.get('done', 0), 'total': p.get('total', 0), 'unit': 'shaders', 'note': ''}
+         return {'step': 'compiling', 'done': p.get('done', 0), 'total': p.get('total', 0), 'unit': 'shaders', 'note': f'{misses:,} not cached' if misses else ''}
+ 
+ 
