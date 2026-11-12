@@ -11,7 +11,10 @@ name: Build the cartridge launcher (Windows + iPhone shell)
 on:
   push:
     branches: [cartouche]
-    paths: ['frontend-ios/**', 'frontend-qt/**', 'frontend/l10n/**', 'patches/**', '.upstream-ref', 'tools/**', '.github/workflows/cartouche-launcher.yml']
+    # Not for a change to tests alone: they are not in the release, and each run is about 10 minutes of Actions (GitHub stopped
+    # running this fork's workflows once "due to the scale of GitHub Actions usage", 2026-11-12).
+    paths: ['frontend-ios/**', 'frontend-qt/**', 'frontend/l10n/**', 'patches/**', '.upstream-ref', 'tools/**', '.github/workflows/cartouche-launcher.yml',
+            '!frontend-qt/tests/**', '!frontend-ios/Tests/**', '!tools/tests/**']
   workflow_dispatch:
 
 permissions:
