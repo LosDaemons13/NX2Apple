@@ -1,0 +1,223 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Fri, 13 Nov 2026 16:30:00 +0100
+Subject: [PATCH] nvn: a host segment hangs off the recording's bytes in the
+ block it overflowed from
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pokémon Violet 4.0.0 (a derived profile) aborted on an iPhone 17 Pro just
+after the opening, at frame 9,668: FATAL NVN command list 0x710c311400:
+record {op 60557, size 16} at 0x16a7807a8, 1960 bytes into its piece of
+1968 at 0x16a780000, in nvn_queue_submit. The piece starts a 256 KB host
+segment, and the bytes there are another recording's (a compact record,
+then op 14 of 24 bytes). By then the host had lent 19,456 segments, about
+two a frame.
+
+Cause: a segment hung off [the recording's first record, the write
+position at the overflow). Violet's command buffers each take fixed-size
+blocks of one allocator from their memory callback (main+0x2652b50 in
+4.0.0, which ignores the size asked for and adds the next block of its
+list, or a null pool when the allocator is empty), and several render
+workers record at once. A recording that ran through several blocks had
+its first record in an earlier block, so the range covered the blocks of
+other command buffers in between; when one of them was given out, the
+segment was freed, the next overflow took it and recorded over it, and the
+first recording was submitted afterwards.
+
+Fix: cmd_new_segment moves a recording's begin to the start of each
+segment it continues in, so a segment hangs off the recording's bytes in
+the block it overflowed from, never wider. With nothing of the recording
+there, it hangs off the byte at the write position, and off the block's
+last byte when that position is the block's end (the byte past it is
+another block's).
+
+t_nvn 5b''': a command buffer records through two 1 KB blocks with
+another command buffer's block between them, a 1,400-byte update goes to
+a host segment, the block between is given out (the segment stays lent), a
+third command buffer overflows (it gets another segment), and the first
+recording replays whole; giving out the block it overflowed from frees
+the segment.
+
+Checked: hle_nvn.c and t_nvn.c compile for arm64-apple-ios26.0 with
+-Wall (LLVM-MinGW clang and the iOS 27.2 SDK, on Windows), test_docs.
+Not run: t_nvn itself and regress.py (they need an Apple-silicon Mac),
+Violet on the device after the fix.
+
+New reference entry: docs/reference/nvn-objects.md, "A host segment
+reclaimed through another command buffer's block"; Violet's note updated.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Pokémon Violet aborted on the iPhone just after the opening (a host segment freed and recorded over before its recording was submitted)
+Issue: none yet (LosDaemons13/NX2Apple, Pokémon Violet 4.0.0 crash after the opening on an iPhone 17 Pro)
+
+---
+ dm/games/01008F6008C5E000/README.md |  1 +
+ dm/gfx/nvn/hle_nvn.c                | 20 ++++++++++---
+ dm/gfx/nvn/nvn_obj.h                |  2 +-
+ dm/gfx/tests/t_nvn.c                | 45 +++++++++++++++++++++++++++++
+ docs/reference/nvn-objects.md       |  7 +++++
+ 5 files changed, 70 insertions(+), 5 deletions(-)
+
+diff --git a/dm/games/01008F6008C5E000/README.md b/dm/games/01008F6008C5E000/README.md
+index 735b64b..87eacf5 100644
+--- a/dm/games/01008F6008C5E000/README.md
++++ b/dm/games/01008F6008C5E000/README.md
+@@ -104,4 +104,5 @@ No `patches.py`.
+ 
+ The other findings are Scarlet's ([Found on this game](../0100A3D008C5C000/README.md#found-on-this-game)).
+ 
++- [A host segment reclaimed through another command buffer's block](../../../docs/reference/nvn-objects.md#a-host-segment-reclaimed-through-another-command-buffers-block): 4.0.0 (a derived profile) on the iPhone aborted in `nvn_queue_submit` just after the opening, once the render workers' command memory blocks lay between one another's (resolved in the host; not yet rerun on the device).
+ - [Bluetooth LE at boot](../../../docs/reference/services.md#bluetooth-le-at-boot): 3.0.1 (`v720896`, a derived profile) calls `nn::bluetooth::InitializeBle` a second after boot and aborted without the `bt` service; the host answers the BLE calls offline (resolved).
+diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
+index 01d95fd..420c646 100644
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -936,11 +936,12 @@ static void cs_dump(void) {   // Called once per frame (at present)
+ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { op_hdr h = {op, size}; memcpy(p, &h, sizeof h); if (op) cs_op(op, size); }
+ static void ctl_chunk_close(cmd_t *o);
+ // New segment: the records the recording in progress has in the old segment become one piece of its control list (written at its next record: ctl_push), and its next record
+-// opens a piece in the new one
++// opens a piece in the new one. A recording under way goes on at the new segment's start, so its bytes in this segment begin there (begin: what a host segment hangs off, hostseg_take)
+ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
+     uint8_t *start = align8(mem), *end = mem + n;
+     if (o->recording == 1 && o->cur && cs_on() && o->end > o->cur) { pthread_mutex_lock(&g_cs_mu); g_cs.waste += (uint64_t)(o->end - o->cur); pthread_mutex_unlock(&g_cs_mu); }
+     if (o->recording) ctl_chunk_close(o);
++    if (o->recording == 1) o->begin = start;
+     o->cur = start; o->end = end;
+ }
+ // Host-supplied segment when the game's own command memory runs out: when the game's out-of-memory callback cannot allocate from its command memory pool, it calls AddCommandMemory with an empty pool (p = NULL, n = 0)
+@@ -952,6 +953,12 @@ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
+ // A segment hangs off the recording that overflowed into it: that recording occupies [its first record, the write position at the overflow) in guest memory, and the game only gives
+ // those bytes out again once they are dead (when it re-records that material in place; packing the next recording right behind by used never touches them). So a segment remembers
+ // that guest range and is reclaimed when the game gives out memory overlapping it; segments overflowing from a host segment keep the same range.
++// The range is the recording's bytes in the game's segment it overflowed from, never wider: a recording that ran through several of the game's blocks has its first record in
++// another block, and the addresses between that block and the last one belong to other command buffers. Pokémon Violet's command buffers each take fixed-size blocks of one
++// allocator from their memory callback (main+0x2652b50 in 4.0.0, ignoring the size asked for), several render workers record at once, and a range from the first block to the last
++// was reclaimed when another worker was given its own block in between: the segment was lent again and recorded over before its recording was submitted, and the queue aborted on a
++// record running past its piece (FATAL NVN command list ... 1960 bytes into its piece of 1968, just after the opening). With nothing of the recording in that segment yet, the
++// range is the byte at the write position, where the game takes the recording to go on; when the segment is full that byte is the next block's, so it is the segment's last byte.
+ // The segment pool grows on demand (SMBW opening course: many small command buffers each overflow once per frame, and the old fixed 64 segments × 1 MB ran out within 8 frames); abort only beyond HOSTSEG_CAP in total.
+ // A segment is HOSTSEG_SZ, with two exceptions (hostseg_size): an empty pool with a length of at most HOSTSEG_SMALL outside a recording gets that much rounded up to HOSTSEG_SMALL
+ // (Super Mario Odyssey hands out many such 512-byte grants before recording; at 256 KB each, and with no recording to reclaim them by, they reached the cap entering the Wooded
+@@ -970,15 +977,20 @@ static size_t hostseg_size(const cmd_t *o, int empty_pool, size_t want) {
+     if (empty_pool) return want && want <= HOSTSEG_SMALL && !o->recording ? HOSTSEG_SMALL : HOSTSEG_SZ;
+     return want > HOSTSEG_SZ ? (want + 0xfff) & ~(size_t)0xfff : HOSTSEG_SZ;
+ }
+-// Take a segment of n bytes: origin = the current recording's guest bytes [first record, write position), at least the byte at the write position; if the write pointer is already in
+-// a host segment (overflowing again), keep that segment's origin
++// Take a segment of n bytes: origin = the current recording's guest bytes in the current segment [its first record there (begin), write position), else the byte at the write position,
++// or the segment's last byte when the write position is its end; if the write pointer is already in a host segment (overflowing again), keep that segment's origin
+ static uint8_t *hostseg_take(const cmd_t *o, size_t n) {
+     static unsigned total; uint64_t f = dm_nvn_frame_count(); uint8_t *m = NULL;
+     uintptr_t lo = 0, hi = 0, cur = o ? (uintptr_t)o->cur : 0;
+     pthread_mutex_lock(&g_hostseg_mu);
+     int in_seg = 0;   // by the segment's end too: a small segment can end where another one starts
+     for (int i = 0; i < g_nhostseg && cur; i++) if (cur >= (uintptr_t)g_hostseg[i].mem && o->end == g_hostseg[i].mem + g_hostseg[i].n) { lo = g_hostseg[i].org_lo; hi = g_hostseg[i].org_hi; in_seg = 1; break; }
+-    if (!in_seg && o && o->recording && o->cur) { lo = o->recording == 1 && o->begin && (uintptr_t)o->begin <= cur ? (uintptr_t)o->begin : cur; hi = cur > lo ? cur : lo + 1; }
++    if (!in_seg && o && o->recording && o->cur) {
++        uintptr_t end = (uintptr_t)o->end;
++        lo = o->recording == 1 && o->begin && (uintptr_t)o->begin <= cur ? (uintptr_t)o->begin : cur;
++        if (lo == cur && cur >= end && end) lo = end - 1;
++        hi = cur > lo ? cur : lo + 1;
++    }
+     for (int i = 0; i < g_nhostseg && !m; i++)
+         if (!g_hostseg[i].busy && g_hostseg[i].n == n) { g_hostseg[i] = (hostseg_t){ g_hostseg[i].mem, n, f, 1, lo, hi }; m = g_hostseg[i].mem; }
+     if (!m && g_hostseg_bytes + n <= HOSTSEG_CAP && (m = malloc(n))) {
+diff --git a/dm/gfx/nvn/nvn_obj.h b/dm/gfx/nvn/nvn_obj.h
+index 31a4fbd..ff1f3bf 100644
+--- a/dm/gfx/nvn/nvn_obj.h
++++ b/dm/gfx/nvn/nvn_obj.h
+@@ -78,7 +78,7 @@ typedef struct {
+                                          // +0x10 is left to the game: its inlined NVN header code writes byte 1 here after AddCommandMemory and before BeginRecording / CallCommands (an internal flag of real NVN; main+0x4da5c, main+0xb8dec etc.).
+                                          // This used to be the low byte of end: rewritten to 01 it cut the segment end by up to 254 bytes, and SMBW's material setup handles (512-byte blocks at minimum) kept overflowing into host segments at the iPhone's addresses
+     uint8_t *end;                        // End of the current command memory segment
+-    uint8_t *begin;                      // First record of this recording; recording 2 = not written yet (host-lent segments hang off the recording's guest bytes from here)
++    uint8_t *begin;                      // First record of this recording in the current segment (the segment's start once the recording moved into it; recording 2 = not written yet): host-lent segments hang off the recording's guest bytes from here
+     PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb; void *cb_data;
+     NVNdevice *dev;
+     uint64_t used;                       // Record bytes written since the game last added command memory, across recordings and host segments (returned by GetCommandMemoryUsed)
+diff --git a/dm/gfx/tests/t_nvn.c b/dm/gfx/tests/t_nvn.c
+index f3563dd..612d845 100644
+--- a/dm/gfx/tests/t_nvn.c
++++ b/dm/gfx/tests/t_nvn.c
+@@ -43,6 +43,19 @@ static void mem_cb(NVNcommandBuffer *c, NVNcommandBufferMemoryEvent ev, size_t m
+     P(nvnCommandBufferAddCommandMemory)(c, &g_cmdpool, (ptrdiff_t)g_cmdoff, n); g_cmdoff += n;
+ }
+ 
++// Command memory callback of Pokémon Violet's kind (main+0x2652b50 in 4.0.0): the next fixed-size block of a list, whatever size the host asks for, nothing once the list is used up
++typedef struct { NVNmemoryPool *pool; const ptrdiff_t *off; int n, next; size_t size; } blk_list;
++static void blk_cb(NVNcommandBuffer *c, NVNcommandBufferMemoryEvent ev, size_t minsz, void *data) {
++    (void)minsz; blk_list *l = data;
++    if (ev == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY && l->next < l->n) { P(nvnCommandBufferAddCommandMemory)(c, l->pool, l->off[l->next], l->size); l->next++; }
++}
++// Whether the host segment that holds p is lent (busy)
++static int seg_busy(const void *p) {
++    pthread_mutex_lock(&g_hostseg_mu); int busy = -1;
++    for (int i = 0; i < g_nhostseg; i++) if ((const uint8_t *)p >= g_hostseg[i].mem && (const uint8_t *)p < g_hostseg[i].mem + g_hostseg[i].n) busy = g_hostseg[i].busy;
++    pthread_mutex_unlock(&g_hostseg_mu); return busy;
++}
++
+ // Counts the out-of-memory callbacks of a command buffer that should need none (the copy strides test)
+ static int g_nocb_calls;
+ static void no_mem_cb(NVNcommandBuffer *c, NVNcommandBufferMemoryEvent ev, size_t minsz, void *data) { (void)c; (void)ev; (void)minsz; (void)data; g_nocb_calls++; }
+@@ -868,6 +881,38 @@ int main(void) {
+         EXPECT("the cap counts every segment's bytes", sum, g_hostseg_bytes);
+         P(nvnCommandBufferFinalize)(&c4); P(nvnCommandBufferFinalize)(&c5); P(nvnMemoryPoolFinalize)(&dp);
+     }
++    // 5b'''. A host segment hangs off the recording's bytes in the block it overflowed from, not from its first record in an earlier block (Pokémon Violet): a command buffer takes
++    //        fixed 1 KB blocks of one pool from its callback, a record larger than a block goes to a host segment, and the block another command buffer is given between the
++    //        recording's first block and its last leaves that segment lent; another overflow then takes a segment of its own, and the recording replays whole
++    {
++        static uint8_t blk[4][1024] __attribute__((aligned(4096))), dst[4096] __attribute__((aligned(4096))), d1[32], d2[1400], d3[2000];
++        memset(dst, 0, sizeof dst); memset(d1, 0x21, sizeof d1); memset(d2, 0x42, sizeof d2); memset(d3, 0x77, sizeof d3);
++        NVNmemoryPoolBuilder bb; NVNmemoryPool bp, dp; P(nvnMemoryPoolBuilderSetDefaults)(&bb); P(nvnMemoryPoolBuilderSetStorage)(&bb, blk, sizeof blk); P(nvnMemoryPoolInitialize)(&bp, &bb);
++        P(nvnMemoryPoolBuilderSetStorage)(&bb, dst, sizeof dst); P(nvnMemoryPoolInitialize)(&dp, &bb);
++        static const ptrdiff_t mine[] = { 2048, 3072 };   // blocks 2 and 3; block 1, between the first and the last, is the other command buffer's
++        blk_list l6 = { &bp, mine, 2, 0, 1024 };
++        NVNcommandBuffer c6, c7, c8; P(nvnCommandBufferInitialize)(&c6, &dev); P(nvnCommandBufferInitialize)(&c7, &dev); P(nvnCommandBufferInitialize)(&c8, &dev);
++        P(nvnCommandBufferSetMemoryCallback)(&c6, blk_cb); P(nvnCommandBufferSetMemoryCallbackData)(&c6, &l6);
++        P(nvnCommandBufferAddCommandMemory)(&c6, &bp, 0, 1024);
++        P(nvnCommandBufferBeginRecording)(&c6);
++        P(nvnCommandBufferUpdateUniformBuffer)(&c6, (uintptr_t)dst, sizeof dst, 0, sizeof d1, d1);
++        EXPECT("the first record is in block 0", 1, CB(&c6)->cur > blk[0] && CB(&c6)->cur <= blk[0] + 1024);
++        P(nvnCommandBufferUpdateUniformBuffer)(&c6, (uintptr_t)dst, sizeof dst, 64, sizeof d2, d2);
++        uint8_t *seg = CB(&c6)->cur - ((24 + sizeof d2 + 7) & ~(size_t)7);
++        EXPECT("the record larger than a block: both blocks taken, then a host segment", 1, l6.next == 2 && seg_busy(seg) == 1);
++        P(nvnCommandBufferAddCommandMemory)(&c7, &bp, 1024, 1024);
++        EXPECT("the other command buffer's block between them leaves the segment lent", 1, seg_busy(seg));
++        P(nvnCommandBufferBeginRecording)(&c8); P(nvnCommandBufferAddCommandMemory)(&c8, NULL, 0, 0);
++        EXPECT("another overflow takes a segment of its own", 1, CB(&c8)->cur < seg || CB(&c8)->cur >= seg + HOSTSEG_SZ);
++        P(nvnCommandBufferUpdateUniformBuffer)(&c8, (uintptr_t)dst, sizeof dst, 2048, sizeof d3, d3);
++        NVNcommandHandle h6 = P(nvnCommandBufferEndRecording)(&c6); P(nvnCommandBufferEndRecording)(&c8);
++        P(nvnQueueSubmitCommands)(&q, 1, &h6); P(nvnQueueFinish)(&q);
++        EXPECT("the recording's first record replays", 0, memcmp(dst, d1, sizeof d1));
++        EXPECT("its record in the host segment replays", 0, memcmp(dst + 64, d2, sizeof d2));
++        P(nvnCommandBufferAddCommandMemory)(&c6, &bp, 3072, 1024);
++        EXPECT("the block it overflowed from, given again, frees the segment", 0, seg_busy(seg));
++        P(nvnCommandBufferFinalize)(&c6); P(nvnCommandBufferFinalize)(&c7); P(nvnCommandBufferFinalize)(&c8); P(nvnMemoryPoolFinalize)(&bp); P(nvnMemoryPoolFinalize)(&dp);
++    }
+ 
+     // 5b. Sync must hold the CPU back: first queue 24 copies of 64 MiB to keep the GPU busy, with the last one copying src to dst;
+     //     the CPU rewrites src only after the fence wait returns. If the wait is released early, that last copy reads the rewritten src.
+diff --git a/docs/reference/nvn-objects.md b/docs/reference/nvn-objects.md
+index 1b00105..d4a2c19 100644
+--- a/docs/reference/nvn-objects.md
++++ b/docs/reference/nvn-objects.md
+@@ -260,6 +260,13 @@ A game may tell NVN objects apart by their bytes, without an NVN call. A host re
+ - **Fix** (`hle_nvn.c`): the pool now grows on demand (256 KB segments, abort only beyond 1 GB; `hostseg_take`). A segment is released only when the game re-grants memory overlapping the guest bytes of the recording that overflowed into it (`hostseg_release` in `AddCommandMemory`): the game records setup blocks once and keeps `CallCommands`-ing them for many frames, so recycling segments after a fixed number of frames would overwrite live recordings. An empty-pool grant of at most 4 KB outside a recording gets a 4 KB segment, a record larger than 256 KB gets a segment that holds it, and the cap counts every segment's bytes (`hostseg_size`). Such a grant has no guest range, so its segment is never reclaimed. On hardware a null pool cannot be written to, so a game that grants one has run out of the command memory it measured for itself: the host's records were larger than the driver's ([Model heaps sized by the host's command record sizes](memory.md#model-heaps-sized-by-the-hosts-command-record-sizes)). That is fixed in the record sizes; the host does not try to recycle these segments by guessing which recording a grant replaces.
+ - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (the many small command buffers: its opening course, per the comment at `HOSTSEG_SZ` in `hle_nvn.c`), [Super Mario Odyssey](../../dm/games/0100000000010000/README.md) (it hands out many 512-byte grants before recording, and with no recording to reclaim them by, 256 KB each reached the cap entering the Wooded Kingdom: the 4 KB segments; 1.4.1 still reached it after 11 minutes of play, about 260,000 4 KB segments, because its display-list heap was full and each re-recording took a new one; fixed by the cause, [Model heaps sized by the host's command record sizes](memory.md#model-heaps-sized-by-the-hosts-command-record-sizes)).
+ 
++### A host segment reclaimed through another command buffer's block
++
++- **Symptom:** `FATAL NVN command list …: record {op …, size …} at …, N bytes into its piece of M at …`, with the piece at the start of host memory (not a guest address), in `nvn_queue_submit`, while `[nvn] the game's command memory ran short, the host lends a segment` lines repeat (about twice a frame).
++- **Cause:** a host segment hung off `[the recording's first record, the write position)`. A recording that ran through several of the game's blocks has its first record in an earlier block, so that range also covered the addresses between the blocks, which belong to other command buffers. Pokémon Violet's command buffers each take fixed-size blocks of one allocator from their memory callback (`main+0x2652b50` in 4.0.0; it ignores the size asked for), and several render workers record at once. When another worker was given its own block inside that range, the segment was freed. The next overflow took it and recorded over it before the first recording was submitted, so its piece then held another recording's records.
++- **Fix** (`hle_nvn.c`): a recording's `begin` moves to the start of each segment it continues in (`cmd_new_segment`), so a segment hangs off the recording's bytes in the block it overflowed from, never wider. With nothing of the recording there yet, it hangs off the byte at the write position, where the game takes the recording to go on. When that position is the block's end, that byte is the next block's, so the block's last byte is used. `t_nvn` 5b''' records through two blocks with another command buffer's block between them, gives that block out, overflows a third command buffer, and replays the first recording.
++- **Found on:** [Pokémon Violet](../../dm/games/01008F6008C5E000/README.md) 4.0.0 on an iPhone 17 Pro, just after the opening (frame 9,668, 19,456 segments lent by then).
++
+ ### What `GetCommandMemoryUsed` counts
+ 
+ Games read this count as a position in their own command memory and size their heaps and slots from it, so it must be what NVN counts.
