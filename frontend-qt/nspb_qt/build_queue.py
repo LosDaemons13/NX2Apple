@@ -39,6 +39,30 @@ class BuildQueue:
         self.waiting = []
         self.current = None
 
+    def remove(self, title_id: str) -> bool:
+        """Take a waiting game out of the queue; the game being built is stopped with Stop, not here."""
+        key = title_id.upper()
+        for i, tid in enumerate(self.waiting):
+            if tid.upper() == key:
+                del self.waiting[i]
+                return True
+        return False
+
+    def move(self, title_id: str, step: int) -> bool:
+        """Build a waiting game one place earlier (step -1) or later (step 1); False at either end."""
+        key = title_id.upper()
+        at = next((i for i, tid in enumerate(self.waiting) if tid.upper() == key), None)
+        if at is None or not 0 <= at + step < len(self.waiting):
+            return False
+        self.waiting[at], self.waiting[at + step] = self.waiting[at + step], self.waiting[at]
+        return True
+
+    def drop_waiting(self) -> int:
+        """Empty what waits and keep the build under way and the outcomes so far: the number taken out."""
+        n = len(self.waiting)
+        self.waiting = []
+        return n
+
     def next(self) -> str | None:
         """The next game to build, now the current one; None when the queue is empty."""
         self.current = self.waiting.pop(0) if self.waiting else None

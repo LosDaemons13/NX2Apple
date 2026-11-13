@@ -460,6 +460,15 @@ class Model(QObject):
         except RuntimeError:
             pass
 
+    def library_keys(self) -> str:
+        """A keys file one of the library's games was built with and that is still there ('' when none): one prod.keys
+        serves every game."""
+        for g in self.library.games:
+            for keys in g.inputs.get('keys') or []:
+                if keys and os.path.isfile(keys):
+                    return keys
+        return ''
+
     def load_game_from_library(self, game: lib.LibraryGame) -> None:
         base = (game.inputs.get('base') or [''])[0]
         if base and inputs.is_game_folder_candidate(base):
@@ -474,6 +483,10 @@ class Model(QObject):
             # prod.keys up a folder) stopped every queued build with "no such file", while the window's keys were fine
             if keys and (os.path.isfile(keys) or not self.keys_path or not os.path.isfile(self.keys_path)):
                 self.keys_path = keys
+            if not (self.keys_path and os.path.isfile(self.keys_path)):
+                # neither the window (empty after the launcher restarts) nor the game knows a keys file that is there, but
+                # the library's other games may: the queue started Pokémon Scarlet with an empty -k, and it failed at once
+                self.keys_path = self.library_keys() or self.keys_path
         self.out_dir = game.output_dir or ''
         self.ipa_path = game.ipa_path if game.has_ipa else ''
         arch = game.archive_path if game.has_archive else ''

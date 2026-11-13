@@ -39,6 +39,23 @@ class BuildQueueTests(unittest.TestCase):
         self.assertFalse(q.active)
         self.assertIsNone(q.next())
 
+    def test_remove_move_and_drop_what_waits_keep_the_build_under_way(self):
+        q = BuildQueue()
+        q.set(['A', 'B', 'C', 'D'])
+        q.next()
+        self.assertFalse(q.remove('a'), 'the game being built is not taken out here')
+        self.assertTrue(q.remove('c'))
+        self.assertEqual(q.waiting, ['B', 'D'])
+        self.assertTrue(q.move('D', -1))
+        self.assertEqual(q.waiting, ['D', 'B'])
+        self.assertFalse(q.move('D', -1), 'already first')
+        self.assertFalse(q.move('B', 1), 'already last')
+        self.assertFalse(q.move('Z', 1))
+        self.assertEqual(q.drop_waiting(), 2)
+        self.assertEqual((q.waiting, q.current, q.active), ([], 'A', True))
+        q.finish_current('ok')
+        self.assertEqual((q.next(), q.results), (None, [('A', 'ok')]))
+
     def test_rows_tick_new_games_and_leave_out_built_unsupported_and_missing_ones(self):
         games = [FakeGame('1', 'New'), FakeGame('2', 'Built', built=True), FakeGame('3', 'Old version'),
                  FakeGame('4', 'Gone', inputs=False), FakeGame('5', 'Running'), FakeGame('6', 'Waiting', built=True)]
@@ -97,6 +114,9 @@ class QueueInTheWindowTests(unittest.TestCase):
         self.saved_games = self.m.library.games
         self.m.library.games = games
         self.addCleanup(setattr, self.m.library, 'games', self.saved_games)
+        self.keys = self.tmp / 'prod.keys'
+        self.keys.write_text('')
+        self.m.keys_path = str(self.keys)
         self.started: list[str] = []
         self.fail_to_start: set[str] = set()
 
@@ -174,6 +194,76 @@ class QueueInTheWindowTests(unittest.TestCase):
         self.m.keys_path = ''
         self.m.load_game_from_library(game)
         self.assertEqual(self.m.keys_path, str(keys), 'a game whose keys are there still brings them')
+
+    def _card_rows(self):
+        """The card's rows as (name label, status label) texts, the footer left out."""
+        from PySide6.QtWidgets import QLabel
+        rows = []
+        lay = self.w.queue_card.body_layout
+        for i in range(lay.count()):
+            w = lay.itemAt(i).widget()
+            labels = [lb.text() for lb in w.findChildren(QLabel)] if w else []
+            if len(labels) == 2:
+                rows.append(tuple(labels))
+        return rows
+
+    def test_the_card_shows_the_queue_and_takes_games_out_without_stopping_the_build(self):
+        self._wire()
+        q = self.m.queue
+        card = self.w.queue_card
+        self.assertTrue(card.isHidden(), 'no queue, no card')
+        q.set(['0100000000010000', '0400486024DEC000', '0400A3A01EE4C000'])
+        self.w._queue_start_next()
+        self.w._refresh_activity_bar()
+        self._settle()
+        self.assertFalse(card.isHidden())
+        t = self.m.t
+        self.assertEqual([n for n, _ in self._card_rows()], ['Mario', '1 · Zelda', '2 · Pokopia'])
+        self.assertEqual(self._card_rows()[0][1], t('queue.status.running'))
+        self.assertEqual(card.title_label.text(), t('queue.title') + ' · ' + t('queue.count', 2))
+        card._move('0400A3A01EE4C000', -1)
+        self._settle()
+        self.assertEqual(q.waiting, ['0400A3A01EE4C000', '0400486024DEC000'])
+        self.assertEqual([n for n, _ in self._card_rows()], ['Mario', '1 · Pokopia', '2 · Zelda'])
+        card._remove('0400486024DEC000')
+        self._settle()
+        self.assertEqual(q.waiting, ['0400A3A01EE4C000'])
+        with mock.patch.object(card, 'confirm_cancel', return_value=False):
+            card._cancel_waiting()
+        self.assertEqual(q.waiting, ['0400A3A01EE4C000'], 'Keep the queue keeps it')
+        with mock.patch.object(card, 'confirm_cancel', return_value=True) as ask:
+            card._cancel_waiting()
+        ask.assert_called_once_with(1)
+        self._settle()
+        self.assertEqual((q.waiting, q.current), ([], '0100000000010000'))
+        self.m.cancel_build.assert_not_called()
+        self.assertFalse(card.cancel_btn.isEnabled(), 'nothing left to cancel')
+        self._finish(ok=True)
+        self.assertEqual(self.started, ['0100000000010000'], 'nothing starts after the build under way')
+        self.assertFalse(q.active)
+        self.assertEqual(self._card_rows(), [('Mario', t('queue.status.done'))], 'the outcome stays until the next build')
+
+    def test_without_keys_a_game_is_not_started_and_the_next_one_is(self):
+        """After a restart the window had no prod.keys and Scarlet's entry none: the queue ran it with an empty -k."""
+        self._wire()
+        self.m.keys_path = ''
+        self.m.queue.set(['0100000000010000', '0400486024DEC000'])
+        self.assertIsNone(self.m.game_folder)
+        with mock.patch.object(self.m, '_keys_readable', side_effect=[None, True]):
+            self.w._queue_start_next()
+        self.assertEqual(self.started, ['0400486024DEC000'], 'the game without keys is not started, the next one is')
+        self.assertEqual(self.m.queue.results, [('0100000000010000', 'failed')])
+
+    def test_a_game_without_keys_takes_the_ones_another_game_was_built_with(self):
+        from nspb_qt import library as lib
+        base = self.tmp / 'Scarlet [0100A3D008C5C000].nsp'
+        base.write_bytes(b'')
+        scarlet = lib.LibraryGame(title_id='0100A3D008C5C000', name='Scarlet', inputs={'base': [str(base)]})
+        self.m.library.games[0].inputs['keys'] = [str(self.tmp / 'gone' / 'prod.keys')]
+        self.m.library.games[1].inputs['keys'] = [str(self.keys)]
+        self.m.keys_path = ''
+        self.m.load_game_from_library(scarlet)
+        self.assertEqual(self.m.keys_path, str(self.keys))
 
     def test_a_build_started_by_hand_is_not_counted_as_queued(self):
         self._wire()

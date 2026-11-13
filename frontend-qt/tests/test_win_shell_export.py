@@ -258,5 +258,60 @@ class RevealIpaPathTest(unittest.TestCase):
                          os.path.normcase(str(self.one)))
 
 
+# ---------------------------------------------------------------- one export at a time
+
+
+class OneExportAtATimeTest(unittest.TestCase):
+    """A second "Recreate the IPA" removed the first one's staged app while pack_ipa.py was still to read it, and both
+    failed with FileNotFoundError ...\\export\\stage\\Payload\\DmShell.app\\AppIcon60x60@2x.png."""
+
+    def test_a_second_export_waits_for_the_first(self) -> None:
+        import threading
+        import time
+        from unittest import mock
+        from nspb_qt.win import shell_export as se
+        inside, overlap, order = [0], [], []
+        first_in = threading.Event()
+
+        def fake(**kw):
+            inside[0] += 1
+            overlap.append(inside[0])
+            order.append(kw['name'])
+            first_in.set()
+            time.sleep(0.2)
+            inside[0] -= 1
+            return True, '', kw['name'], []
+
+        logs: list[str] = []
+        with mock.patch.object(se, '_export_shell', fake):
+            a = threading.Thread(target=lambda: se.export_shell(name='first'))
+            a.start()
+            first_in.wait(5)
+            self.assertTrue(se.export_busy())
+            got = se.export_shell(name='second', log=logs.append)
+            a.join(5)
+        self.assertEqual(got[2], 'second')
+        self.assertEqual(order, ['first', 'second'])
+        self.assertEqual(max(overlap), 1, 'never two at once')
+        self.assertTrue(any('another export' in line for line in logs))
+        self.assertFalse(se.export_busy())
+
+    def test_left_stage_folders_go_and_another_exports_stays(self) -> None:
+        import time
+        from nspb_qt.win import shell_export as se
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            export = se.export_folder(root)
+            for name in ('stage', 'stage-old', 'stage-recent', 'stage-mine', 'other'):
+                (export / name / 'Payload').mkdir(parents=True)
+            (export / se.IPA_NAME).write_bytes(b'ipa')
+            old = time.time() - se.STALE_STAGE_SECONDS - 60
+            os.utime(export / 'stage-old', (old, old))
+            se._sweep_stages(root, keep=export / 'stage-mine')
+            self.assertEqual(sorted(p.name for p in export.iterdir()),
+                             [se.IPA_NAME, 'other', 'stage-mine', 'stage-recent'])
+            self.assertEqual(se.export_stage(root, 'ab12cd34').name, 'stage-ab12cd34')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -118,8 +120,41 @@ def ipa_path(root: str | os.PathLike) -> Path:
     return export_folder(root) / IPA_NAME
 
 
-def export_stage(root: str | os.PathLike) -> Path:
-    return export_folder(root) / 'stage'
+def export_stage(root: str | os.PathLike, tag: str = '') -> Path:
+    """The folder an export stages DmShell.app in: one of its own (`stage-<tag>`), so that no other export removes it."""
+    return export_folder(root) / (f'stage-{tag}' if tag else 'stage')
+
+
+# One export at a time in this process. Each takes minutes (pack_ipa.py lists every file, then reads the games' frameworks,
+# about 19 GB, before the app's own files), and they wrote the same IPA from one stage folder that each removed when it
+# started and when it ended: a second "Recreate the IPA" (the Wi-Fi window closed and opened again offers it again), a
+# GitHub republish or the export at the end of a build removed the first one's staged app while pack_ipa.py was still to
+# read it, and both failed (FileNotFoundError: ...\export\stage\Payload\DmShell.app\AppIcon60x60@2x.png).
+_EXPORT_LOCK = threading.Lock()
+STALE_STAGE_SECONDS = 12 * 3600   # a stage folder this old was left by an export that did not end (closed, crashed)
+
+
+def export_busy() -> bool:
+    """Whether an export runs in this process now (the Wi-Fi window shows it instead of offering another)."""
+    return _EXPORT_LOCK.locked()
+
+
+def _sweep_stages(root: Path, keep: Path) -> None:
+    """Remove stage folders left by exports that did not end: the old shared `stage`, and `stage-*` folders not touched for
+    STALE_STAGE_SECONDS (another launcher's export may still use a newer one)."""
+    folder = export_folder(root)
+    if not folder.is_dir():
+        return
+    now = time.time()
+    for d in folder.iterdir():
+        if d == keep or not d.is_dir() or not (d.name == 'stage' or d.name.startswith('stage-')):
+            continue
+        try:
+            old = d.name == 'stage' or now - d.stat().st_mtime > STALE_STAGE_SECONDS
+        except OSError:
+            continue
+        if old:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def frameworks_mirror(root: str | os.PathLike) -> Path:
@@ -516,7 +551,22 @@ def _cleanup_tmp_sidecars(tmp_ipa: Path) -> None:
             pass
 
 
-def export_shell(
+def export_shell(*, log: Callable[[str], None] = lambda _: None, **kwargs) -> tuple[bool, str, str, list[str]]:
+    """Mirror `framework` into `root`, update `shell.json`, and pack `<root>/export/NX2Apple.ipa` (_export_shell), after
+    any export already running in this process has ended.
+
+    Returns `(ok, ipa_path, message, notes)`.
+    """
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        log('export: another export of the IPA is running, this one starts when it ends\n')
+        _EXPORT_LOCK.acquire()
+    try:
+        return _export_shell(log=log, **kwargs)
+    finally:
+        _EXPORT_LOCK.release()
+
+
+def _export_shell(
     *,
     root: str | os.PathLike,
     repo: str | os.PathLike,
@@ -530,10 +580,6 @@ def export_shell(
     log: Callable[[str], None] = lambda _: None,
     stage_cb: Callable[[str, str], None] | None = None,
 ) -> tuple[bool, str, str, list[str]]:
-    """Mirror `framework` into `root`, update `shell.json`, and pack `<root>/export/NX2Apple.ipa`.
-
-    Returns `(ok, ipa_path, message, notes)`.
-    """
     def _t(key: str, *args: object) -> str:
         if t_func is not None:
             return t_func(key, *args)
@@ -589,12 +635,14 @@ def export_shell(
             stage_cb(pack_stage_name, 'failed')
         return False, '', _t('shell.exportFailed', f'missing {APP_NAME} template'), notes
 
-    stage_dir = export_stage(root_p)
+    tag = uuid.uuid4().hex[:8]
+    stage_dir = export_stage(root_p, tag)
     out_ipa = ipa_path(root_p)
     out_ipa.parent.mkdir(parents=True, exist_ok=True)
-    tmp_ipa = out_ipa.parent / f'.{IPA_NAME}.{uuid.uuid4().hex[:8]}.tmp'
+    tmp_ipa = out_ipa.parent / f'.{IPA_NAME}.{tag}.tmp'
     staged_app = stage_dir / 'Payload' / APP_NAME
     try:
+        _sweep_stages(root_p, keep=stage_dir)
         shutil.rmtree(stage_dir, ignore_errors=True)
         _cleanup_tmp_sidecars(tmp_ipa)
         staged_app.parent.mkdir(parents=True, exist_ok=True)

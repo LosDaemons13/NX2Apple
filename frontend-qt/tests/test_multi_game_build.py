@@ -82,6 +82,8 @@ class MultiGameBuild(unittest.TestCase):
         self.m.keys_path = str(self.root / 'prod.keys')
         Path(self.m.keys_path).touch()
         self.m.artwork.request_banner_async = mock.Mock()
+        # Build asks about Defender first on Windows, in a modal box nobody answers offscreen: the run waited forever
+        self.m.should_prompt_defender_before_build = lambda **_kw: False
         self.commands = []
 
     def run_process(self, diagnostic='', title_id=None):

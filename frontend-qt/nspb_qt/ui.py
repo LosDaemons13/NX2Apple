@@ -938,6 +938,11 @@ class MainWindow(QMainWindow):
         self.action_group = self._build_action_card()
         self.body_col.addWidget(self.action_group)
 
+        # Build queue: what was built, what is being built, what waits (queue_card.py, BuildQueueCard.swift on the Mac)
+        from .queue_card import BuildQueueCard
+        self.queue_card = BuildQueueCard(self.m, on_select=self._open_build_queue, on_change=self._refresh_activity_bar)
+        self.body_col.addWidget(self.queue_card)
+
         # Card 5: Progress Card
         self.stages_card = self._build_stages_card()
         self.body_col.addWidget(self.stages_card)
@@ -2192,6 +2197,8 @@ class MainWindow(QMainWindow):
         return bar
 
     def _refresh_activity_bar(self) -> None:
+        if getattr(self, 'queue_card', None) is not None:
+            self.queue_card.refresh()
         self.activity_bar.setVisible(not self.m.running or self._current_page != 'builds')
         if self.m.running:
             self.act_dot.set_color(style.AMBER)
@@ -3145,6 +3152,13 @@ class MainWindow(QMainWindow):
             number, total = q.position()
             self.m.library.select(game.title_id)
             self.m.load_game_from_library(game)
+            if self.m.game_folder is None and not self.m._keys_readable():
+                # Build would be greyed out by hand (can_build); started from here it ran with an empty -k and failed at once
+                line = f"{game.name} · {t('fail.keys.what')} {t('fail.keys.next')}"
+                self.m.log(line + '\n')
+                self.footer.setText(line)
+                q.finish_current('failed')
+                continue
             line = t('queue.starting', game.name, number, total)
             self.m.log(line + '\n')
             self.footer.setText(line)

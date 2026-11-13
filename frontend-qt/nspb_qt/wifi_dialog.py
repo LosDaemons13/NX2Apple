@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from . import platform_util as pu
 from . import style
 from . import wifi_share as ws
 from .widgets import CardGroup
@@ -158,7 +159,7 @@ class WifiShareDialog(QDialog):
         t = self.m.t
         ipa = self._ipa()
         stale = ipa is not None and self._ipa_is_stale(ipa)
-        busy = self._remake is not None
+        busy = self._remake is not None or self._export_elsewhere()
         error = getattr(self, '_remake_error', '')
         self.stale_lbl.setText(t('wifi.remaking') if busy else (t('wifi.remakeFailed', error) if error else t('wifi.stale')))
         self.stale_lbl.setVisible(stale or busy or bool(error))
@@ -187,10 +188,20 @@ class WifiShareDialog(QDialog):
             self._stale_key = key
         return self._stale
 
+    @staticmethod
+    def _export_elsewhere() -> bool:
+        """An export of the IPA runs now (this window's from before it was closed, a GitHub republish, a build's end):
+        the window says the IPA is being made instead of offering a second export."""
+        if not pu.IS_WIN:
+            return False
+        from .win import shell_export as se
+        return se.export_busy()
+
     def _remake_ipa(self) -> None:
         """Export the IPA again with this launcher's iPhone app and the games already built: no build, a few minutes."""
         from .win import shell_export as se
-        if self._remake is not None or self.m.running:
+        if self._remake is not None or self.m.running or self._export_elsewhere():
+            self._refresh()
             return
         root, engine = self.m.shell_cache_path, self.m.engine_path
         python_exe, banners = self.m.python_path or '', self.m.artwork.banners_dir

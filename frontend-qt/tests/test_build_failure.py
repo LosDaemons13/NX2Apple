@@ -52,6 +52,8 @@ class BuildFailure(unittest.TestCase):
         m = Model()
         m.repo_path = ''  # A failure-view fixture never starts a process in a detected checkout.
         m.lang = Lang('en')   # these assertions read English whatever the device language is
+        # Build asks about Defender first on Windows, in a modal box nobody answers offscreen: the run waited forever
+        m.should_prompt_defender_before_build = lambda **_kw: False
         w = MainWindow(m)
         # Delete while the app exists: PySide destroys leftovers after it at exit and segfaults.
         self.addCleanup(self._delete, m, w)
