@@ -9,6 +9,11 @@ Each game's build writes the list for that game into its `dm/amiibo.tsv` (`write
 `<ID>\t<name>\t<series>\t<what it does in this game, or nothing>`, after `#` lines that name the source and its
 licence. The menu shows the amiibo this game uses first, then every amiibo by series.
 
+AmiiboAPI is in English. `ios/amiibo_i18n.json`, kept by hand so that a new AmiiboAPI list does not lose it, has another
+language's series, the editions and outfits after a name's " - ", the names that differ (Isabelle is Marie in French)
+and the uses. Each such language gets `dm/amiibo.<code>.tsv` (`write_game_lists`), and the menu reads the one of the
+iPhone's language. What a language leaves out stays English.
+
 Regenerate the JSON from AmiiboAPI's two files:
     python -m nspb_qt.win.amiibo_db <amiibo.json> <games_info.json>
 """
@@ -19,6 +24,7 @@ import sys
 from pathlib import Path
 
 DB = Path(__file__).resolve().parent / 'ios' / 'amiibo.json'
+I18N = Path(__file__).resolve().parent / 'ios' / 'amiibo_i18n.json'
 
 SOURCE = 'AmiiboAPI (https://github.com/N3evin/AmiiboAPI), database/amiibo.json and games_info.json, MIT licence, Copyright (c) 2019 N3evin'
 
@@ -54,9 +60,35 @@ def load(path: Path = DB) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def game_list(title_id: str, db: dict | None = None) -> str:
-    """The menu's list for one game: every amiibo, with what it does in this game when the database says."""
+def translations(path: Path | None = None) -> dict:
+    """{language code: {series, suffixes, names, uses, separator}} from amiibo_i18n.json; {} without the file."""
+    try:
+        return json.loads((path or I18N).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def _translator(tr: dict):
+    """(name, series, use) in tr's language, each left as it is where tr has nothing for it."""
+    names, suffixes, series, uses = (tr.get(k, {}) for k in ('names', 'suffixes', 'series', 'uses'))
+
+    def name(n: str) -> str:
+        if n in names:
+            return names[n]
+        base, sep, rest = n.partition(' - ')
+        return names.get(base, base) + (sep + suffixes.get(rest, rest) if sep else '')
+
+    def use(u: str) -> str:
+        return tr.get('separator', '; ').join(uses.get(part, part) for part in u.split('; ')) if u else u
+
+    return name, (lambda s: series.get(s, s)), use
+
+
+def game_list(title_id: str, db: dict | None = None, tr: dict | None = None) -> str:
+    """The menu's list for one game: every amiibo, with what it does in this game when the database says.
+    tr: one language's translations (translations()[code]); None for English."""
     db = db or load()
+    name_of, series_of, use_of = _translator(tr or {})
     tid = title_id.upper()
     uses: dict[str, str] = {}
     for game in db['games']:
@@ -67,16 +99,27 @@ def game_list(title_id: str, db: dict | None = None) -> str:
     clean = lambda s: ' '.join(str(s).split())   # noqa: E731 (one line a row, no tab inside a field)
     head = [f'# The amiibo the in-game menu offers, for title {tid}: ID, name, series, what it does in this game',
             f'# From {db["source"]}']
-    rows = [f'{aid}\t{clean(name)}\t{clean(db["series"].get(aid[12:14], "Other"))}\t{clean(uses.get(aid, ""))}'
+    rows = [f'{aid}\t{clean(name_of(name))}\t{clean(series_of(db["series"].get(aid[12:14], "Other")))}\t{clean(use_of(uses.get(aid, "")))}'
             for aid, name in db['amiibo']]
     return '\n'.join(head + rows) + '\n'
 
 
-def write_game_list(title_id: str, out: Path, db: dict | None = None) -> int:
+def write_game_list(title_id: str, out: Path, db: dict | None = None, tr: dict | None = None) -> int:
     """Write the game's list; the number of amiibo the database says this game uses."""
-    text = game_list(title_id, db)
+    text = game_list(title_id, db, tr)
     out.write_text(text, encoding='utf-8', newline='\n')
     return sum(1 for line in text.splitlines() if not line.startswith('#') and line.split('\t')[3])
+
+
+def write_game_lists(title_id: str, folder: Path, db: dict | None = None, langs: dict | None = None) -> int:
+    """The game's list in English (amiibo.tsv) and in each language of amiibo_i18n.json (amiibo.<code>.tsv) into
+    folder; the number of amiibo this game uses."""
+    db = db or load()
+    langs = translations() if langs is None else langs
+    used = write_game_list(title_id, folder / 'amiibo.tsv', db)
+    for code, tr in sorted(langs.items()):
+        write_game_list(title_id, folder / f'amiibo.{code}.tsv', db, tr)
+    return used
 
 
 def main(argv: list[str]) -> int:

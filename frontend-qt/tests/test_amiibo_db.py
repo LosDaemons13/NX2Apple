@@ -45,6 +45,34 @@ class GameListTests(unittest.TestCase):
         self.assertEqual(used, sum(1 for r in rows(text) if r[3]))
 
 
+class FrenchTests(unittest.TestCase):
+    """AmiiboAPI is in English; amiibo_i18n.json has the French (the player asked for it)."""
+
+    def test_every_series_edition_and_use_has_its_french(self):
+        db, fr = amiibo_db.load(), amiibo_db.translations()['fr']
+        uses = {part for text in db['texts'] for part in text.split('; ')}
+        self.assertEqual(uses - set(fr['uses']), set())
+        self.assertEqual(set(db['series'].values()) - set(fr['series']), set())
+        editions = {name.partition(' - ')[2] for _, name in db['amiibo'] if ' - ' in name}
+        self.assertEqual(editions - set(fr['suffixes']), set())
+
+    def test_the_french_list_of_odyssey(self):
+        got = {r[0]: r for r in rows(amiibo_db.game_list(ODYSSEY, tr=amiibo_db.translations()['fr']))}
+        self.assertEqual(got['0000000003710102'][1:], ['Mario - Mariage', 'Super Mario Bros.',
+                                                       'Recevoir un costume du personnage ; Devenir invincible un moment'])
+        self.assertEqual(got['01810000037d0002'][1], 'Marie', 'Isabelle (Super Smash Bros. series) is Marie')
+        self.assertEqual(got['3740000103741402'][1:3], ['Céréales Super Mario', 'Autres'])
+
+    def test_each_language_gets_its_file_beside_the_english_one(self):
+        with tempfile.TemporaryDirectory() as td:
+            used = amiibo_db.write_game_lists(ODYSSEY, Path(td))
+            names = sorted(p.name for p in Path(td).iterdir())
+            fr = (Path(td) / 'amiibo.fr.tsv').read_text(encoding='utf-8')
+        self.assertEqual(names, ['amiibo.fr.tsv', 'amiibo.tsv'])
+        self.assertIn('Mario - Mariage', fr)
+        self.assertGreaterEqual(used, 25)
+
+
 class GenerateTests(unittest.TestCase):
     def test_uses_are_merged_per_game_and_their_texts_kept_once(self):
         amiibo = {'amiibos': {'0x0000000003710102': {'name': 'Mario - Wedding'}, '0x0002000003720102': {'name': 'Peach - Wedding'}},
@@ -71,8 +99,9 @@ class WiringTests(unittest.TestCase):
     def test_the_build_writes_the_list_the_menu_reads(self):
         build = (QT / 'nspb_qt/win/build_app.py').read_text(encoding='utf-8')
         menu = (QT / 'nspb_qt/win/ios/Launcher.m').read_text(encoding='utf-8')
-        self.assertIn("amiibo_db.write_game_list(gp('title_id') or game, dmres / 'amiibo.tsv')", build)
+        self.assertIn("amiibo_db.write_game_lists(gp('title_id') or game, dmres)", build)
         self.assertIn('@"amiibo.tsv"', menu)
+        self.assertIn('@"amiibo.%@.tsv"', menu, "the iPhone's language first")
         for call in ('dm_amiibo_offered()', 'dm_amiibo_place(', 'dm_amiibo_remove()', 'dm_amiibo_placed('):
             self.assertIn(call, menu)
 

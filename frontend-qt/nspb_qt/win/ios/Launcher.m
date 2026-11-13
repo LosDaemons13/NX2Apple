@@ -631,16 +631,34 @@ extern int dm_amiibo_placed(char out_hex[17]);
 @end
 
 // dm/amiibo.tsv beside launcher.json in this game's bundle (build_app.py writes it with amiibo_db.py): every amiibo by name, read once.
-// A line: the ID (16 hex digits), the name, the series, what it does in this game (empty when the list does not say).
+// A line: the ID (16 hex digits), the name, the series, what it does in this game (empty when the list does not say). The list in the
+// iPhone's language comes first, dm/amiibo.<code>.tsv (fr for fr-FR, pt-br for pt-BR), then the English one.
+static NSArray<NSString *> *nspb_amiibo_files(void) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSString *lang in NSLocale.preferredLanguages) {
+        NSString *code = lang.lowercaseString;
+        NSString *base = [code componentsSeparatedByString:@"-"].firstObject;
+        for (NSString *c in @[code, base]) {
+            NSString *n = [NSString stringWithFormat:@"amiibo.%@.tsv", c];
+            if (c.length && ![names containsObject:n]) [names addObject:n];
+        }
+    }
+    [names addObject:@"amiibo.tsv"];
+    return names;
+}
+
 static NSArray<NspbAmiibo *> *nspb_amiibo_list(void) {
     static NSArray<NspbAmiibo *> *list;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSMutableArray<NspbAmiibo *> *out = [NSMutableArray array];
         NSString *text = nil, *path = nil;
-        for (NSBundle *b in @[[NSBundle bundleForClass:NspbAmiibo.class], NSBundle.mainBundle]) {
-            path = [[b.resourcePath stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"amiibo.tsv"];
-            text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *file in nspb_amiibo_files()) {
+            for (NSBundle *b in @[[NSBundle bundleForClass:NspbAmiibo.class], NSBundle.mainBundle]) {
+                path = [[b.resourcePath stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:file];
+                text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+                if (text) break;
+            }
             if (text) break;
         }
         if (!text) fprintf(stderr, "launcher: no dm/amiibo.tsv in the game's bundle: the in-game menu has no amiibo\n");

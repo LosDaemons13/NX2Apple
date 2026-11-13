@@ -984,8 +984,8 @@ def main(argv: list[str] | None = None) -> int:
     launcher = py(repo / 'dm/games/settings.py', gd, patched, nacp,
                   gen / 'launcher.json', env=dict(env, GFXAPI=gfx))
     shutil.copy2(gen / 'launcher.json', dmres / 'launcher.json')
-    # The in-game menu's amiibo (ios/Launcher.m, patch 0127): every amiibo, and what each does in this game
-    used = amiibo_db.write_game_list(gp('title_id') or game, dmres / 'amiibo.tsv')
+    # The in-game menu's amiibo (ios/Launcher.m, patch 0127): every amiibo, and what each does in this game, in English and each language of amiibo_i18n.json
+    used = amiibo_db.write_game_lists(gp('title_id') or game, dmres)
     t(f'amiibo: the in-game menu lists them all, {used} this game uses first')
     if not env.get('DM_LANG'):
         try:
