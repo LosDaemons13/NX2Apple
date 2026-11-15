@@ -1405,8 +1405,11 @@ class MainWindow(QMainWindow):
         """Open dialog to select which built games go into the shared IPA."""
         from .queue_dialog import ShellIpaSelectionDialog
         dlg = ShellIpaSelectionDialog(self.m, self)
-        if dlg.exec() == QDialog.Accepted:
+        result = dlg.exec()
+        self.m.log(f'_open_shell_selection: dialog result={result}, Accepted={QDialog.Accepted}\n')
+        if result == QDialog.Accepted:
             chosen = dlg.chosen
+            self.m.log(f'_open_shell_selection: chosen={[(r.title_id, r.name) for r in chosen]}\n')
             if not chosen:
                 return
             # Export with only chosen games
@@ -1414,6 +1417,7 @@ class MainWindow(QMainWindow):
 
     def _export_selected_shell_games(self, chosen: list) -> None:
         """Export shared IPA with only the selected games."""
+        self.m.log('_export_selected_shell_games: called\n')
         import threading
         from .win import shell_export as se
 
