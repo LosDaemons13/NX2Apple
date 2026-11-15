@@ -1437,12 +1437,17 @@ class MainWindow(QMainWindow):
         # Export
         def work() -> None:
             try:
+                self.m.log('export-selected: starting...\n')
+                self.m.log(f'export-selected: root={root}\n')
+                self.m.log(f'export-selected: engine={engine}\n')
+                self.m.log(f'export-selected: first={first.framework}\n')
                 ok, out_ipa, msg, notes = se.export_shell(
                     root=root, repo=engine, framework=first.framework,
                     title_id=first.title_id, name=first.name,
                     python_exe=python_exe, banners_dir=banners,
                     picked_artwork=custom.get(first.title_id.upper()),
                     t_func=t)
+                self.m.log(f'export-selected: ok={ok}, out_ipa={out_ipa}, msg={msg}\n')
                 if ok:
                     self.m.ipa_path = out_ipa
                     self.m.log(t('shell.exportDone', out_ipa) + '\n')
@@ -1450,6 +1455,8 @@ class MainWindow(QMainWindow):
                 else:
                     QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, msg))
             except Exception as e:
+                import traceback
+                self.m.log(f'export-selected: exception={e}\n{traceback.format_exc()}\n')
                 QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, str(e) or type(e).__name__))
 
         threading.Thread(target=work, name='export-selected-shell', daemon=True).start()

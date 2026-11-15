@@ -231,6 +231,7 @@ class ShellIpaSelectionDialog(QDialog):
         return [r for r in self.rows if r.checked and r.has_framework]
 
     def _render(self) -> None:
+        keep = self.scroll.verticalScrollBar().value()
         group = CardGroup()
         for idx, row in enumerate(self.rows):
             if idx:
@@ -259,10 +260,12 @@ class ShellIpaSelectionDialog(QDialog):
             rl.addLayout(col, 1)
             group.add_row(w)
         self.scroll.setWidget(group)
+        self.scroll.verticalScrollBar().setValue(keep)
         n = len(self.chosen)
         self.total_lbl.setText(self.m.t('shell.selectTotal', n) if n else '')
         self.export_btn.setText(self.m.t('shell.selectExport', n))
         self.export_btn.setEnabled(n > 0)
+        self.m.log(f'select-dialog: render done, chosen={[(r.title_id, r.checked) for r in self.chosen]}\n')
 
     def _toggle(self, title_id: str, on: bool) -> None:
         for row in self.rows:
@@ -277,4 +280,9 @@ class ShellIpaSelectionDialog(QDialog):
                     checked=on,
                 )
                 break
+        self.m.log(f'select-dialog: toggled {title_id}={on}\n')
         QTimer.singleShot(0, self._render)
+
+    def accept(self) -> None:
+        self.m.log(f'select-dialog: accept, chosen={[(r.title_id, r.name) for r in self.chosen]}\n')
+        super().accept()
