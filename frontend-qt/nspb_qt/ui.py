@@ -7,7 +7,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QPoint, QTimer, QUrl, Qt, QMetaObject, Q_ARG, Slot
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QFont, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -1231,6 +1231,14 @@ class MainWindow(QMainWindow):
         self.step1_reveal_btn.clicked.connect(lambda: pu.reveal(self._effective_ipa_path()))
         self.step1_reveal_btn.hide()
         rs1_lay.addWidget(self.step1_reveal_btn)
+
+        # Select games for shared IPA (only in shared mode)
+        self.step1_select_btn = QPushButton(self.m.t('shell.selectTitle'))
+        self.step1_select_btn.setObjectName('ghost')
+        self.step1_select_btn.clicked.connect(self._open_shell_selection)
+        self.step1_select_btn.hide()
+        rs1_lay.addWidget(self.step1_select_btn)
+
         grp.add_row(r_s1)
         grp.add_divider()
 
@@ -1365,6 +1373,15 @@ class MainWindow(QMainWindow):
         self.step1_reveal_btn.setText(self.m.t('shell.showInFinder'))
         self.step1_reveal_btn.setToolTip(self.m.t('msg.ipaAt', ipa_p) if has_ipa else '')
         self.step1_reveal_btn.setVisible(has_ipa)
+        # Show select button only in shared mode when there are built games in shell cache
+        shared_mode = not one
+        if shared_mode:
+            from .win import shell_export as se
+            lib = se.ShellLibrary.load(self.m.shell_cache_path)
+            has_built = any(Path(g.framework).is_dir() for g in lib.games)
+            self.step1_select_btn.setVisible(has_built)
+        else:
+            self.step1_select_btn.hide()
         self.step2_title.setText('②  ' + self.m.t('shell.step2Title'))
         self.step2_sub.setText(self.m.t('shell.oneGameStep2Sub' if one else 'shell.step2Sub'))
         self.publish_btn.setText(self.m.t('github.publish'))
@@ -1383,6 +1400,72 @@ class MainWindow(QMainWindow):
         self.step3_open_romfs_btn.setToolTip(self.m.t('msg.archiveAt', arch_p) if has_arch else '')
         self.step3_open_romfs_btn.setVisible(has_arch)
         self.drive_copy_btn.setEnabled(has_arch)
+
+    def _open_shell_selection(self) -> None:
+        """Open dialog to select which built games go into the shared IPA."""
+        from .queue_dialog import ShellIpaSelectionDialog
+        dlg = ShellIpaSelectionDialog(self.m, self)
+        if dlg.exec() == QDialog.Accepted:
+            chosen = dlg.chosen
+            if not chosen:
+                return
+            # Export with only chosen games
+            self._export_selected_shell_games(chosen)
+
+    def _export_selected_shell_games(self, chosen: list) -> None:
+        """Export shared IPA with only the selected games."""
+        import threading
+        from .win import shell_export as se
+
+        root = self.m.shell_cache_path
+        engine = self.m.engine_path
+        python_exe = self.m.python_path or ''
+        banners = self.m.artwork.banners_dir
+        custom = dict(self.m.artwork.custom_paths)
+        t = self.m.t
+
+        # First game with a valid framework (for template info)
+        first = next((r for r in chosen if Path(r.framework).is_dir()), None)
+        if first is None:
+            QMessageBox.warning(self, t('shell.selectTitle'), t('shell.noFramework', chosen[0].name, 'shell-framework'))
+            return
+
+        # Build a temporary shell.json with only chosen games
+        lib = se.ShellLibrary.load(root)
+        lib.games = [se.ShellGame(title_id=r.title_id, name=r.name, framework=r.framework) for r in chosen]
+
+        # Export
+        def work() -> None:
+            try:
+                ok, out_ipa, msg, notes = se.export_shell(
+                    root=root, repo=engine, framework=first.framework,
+                    title_id=first.title_id, name=first.name,
+                    python_exe=python_exe, banners_dir=banners,
+                    picked_artwork=custom.get(first.title_id.upper()),
+                    t_func=t)
+                if ok:
+                    self.m.ipa_path = out_ipa
+                    self.m.log(t('shell.exportDone', out_ipa) + '\n')
+                    QMetaObject.invokeMethod(self, '_show_export_done', Qt.QueuedConnection, Q_ARG(str, out_ipa))
+                else:
+                    QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, msg))
+            except Exception as e:
+                QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, str(e) or type(e).__name__))
+
+        threading.Thread(target=work, name='export-selected-shell', daemon=True).start()
+
+    @Slot(str)
+    def _show_export_done(self, out_ipa: str) -> None:
+        t = self.m.t
+        self.m.log(t('shell.exportDone', out_ipa) + '\n')
+        QMessageBox.information(self, t('shell.selectTitle'), t('shell.exportDone', out_ipa))
+        self._refresh_install_card()
+
+    @Slot(str)
+    def _show_export_failed(self, msg: str) -> None:
+        t = self.m.t
+        QMessageBox.warning(self, t('shell.selectTitle'), t('shell.exportFailed', msg))
+        self._refresh_install_card()
 
     def _pick_drive_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, self.m.t('shell.driveChoose'), self._drive_folder or str(Path.home()))

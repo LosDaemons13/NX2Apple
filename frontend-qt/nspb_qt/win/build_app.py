@@ -965,13 +965,19 @@ def main(argv: list[str] | None = None) -> int:
     if (patched / 'nro.tsv').exists():
         shutil.copy2(patched / 'nro.tsv', dmres)
     # the tables the host reads at run time; c1_full is only for the NVN chain
-    tables = ['shader_map.tsv', 'pso_manifest.tsv'] + ([] if gfx in ('vulkan', 'gl')
+    # pso_manifest.tsv is optional: a profile may not have recorded prewarm seeds yet (e.g., Pokopia)
+    tables = ['shader_map.tsv'] + ([] if gfx in ('vulkan', 'gl')
                                                      else ['c1_full.tsv'])
     for f in tables:
         src = gd / f
         if not src.exists():
             die(f'no {src} in the game profile (the shader step must run first)')
         shutil.copy2(src, dmres)
+    # pso_manifest.tsv: optional (like cb_extent.tsv)
+    if (gd / 'pso_manifest.tsv').exists():
+        shutil.copy2(gd / 'pso_manifest.tsv', dmres)
+    else:
+        t(f'no {gd}/pso_manifest.tsv: no bundled prewarm seed list')
     if gfx == 'nvn':
         if (gd / 'cb_extent.tsv').exists():
             shutil.copy2(gd / 'cb_extent.tsv', dmres)
