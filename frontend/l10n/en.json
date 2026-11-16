@@ -2062,6 +2062,8 @@
   "shell.selectNote": "Tick the already-built games to include. Incomplete games cannot be selected.",
   "shell.selectReady": "Framework ready",
   "shell.selectMissing": "Framework missing (rebuild the game)",
+  "shell.selectShadersOut": "Shaders outside the IPA",
+  "shell.selectShadersOutNote": "The shaders are most of the IPA, several GB per game. Left out, the IPA stays small enough for FlareStore. The iPhone app gets them with the game data under Receive from PC.",
   "shell.selectTotal": "%d game(s) selected",
   "shell.selectExport": "Create IPA (%d)",
   "shellCache.busy": "A build or an install is running. Move the cache when it is done.",

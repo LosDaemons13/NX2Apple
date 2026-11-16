@@ -355,15 +355,23 @@ def find_shell_template(repo: str | os.PathLike, root: str | os.PathLike | None 
         cands.append(Path(env_tpl))
     meipass = getattr(sys, '_MEIPASS', None)
     if meipass:
+        # Standard layout: <meipass>/shell_template/DmShell.app/
         cands.append(Path(meipass) / 'shell_template' / APP_NAME)
+        # Packaged Windows layout: _internal/shell_template/ (contents copied directly)
+        cands.append(Path(meipass) / '_internal' / 'shell_template')
         cands.append(Path(meipass).parent / 'shell_template' / APP_NAME)
+    # Packaged Windows layout: NX2Apple.exe + _internal/shell_template/ (contents copied directly)
+    cands.append(Path(sys.executable).parent / '_internal' / 'shell_template')
     cands.append(Path(sys.executable).parent / 'shell_template' / APP_NAME)
     cands.append(Path(__file__).resolve().parent / 'shell_template' / APP_NAME)
     if root:
         cands.append(Path(root) / 'template' / APP_NAME)
 
+    log(f'find_shell_template: candidates={cands}\n')
     for c in cands:
+        log(f'find_shell_template: checking {c} scheme={c / SCHEME} exists={(c / SCHEME).is_file()} plist={(c / "Info.plist").is_file()}\n')
         if (c / SCHEME).is_file() and (c / 'Info.plist').is_file():
+            log(f'find_shell_template: FOUND at {c}\n')
             return c
 
     # On a macOS source checkout without a pre-built template, build one once into <root>/template/DmShell.app
@@ -483,6 +491,65 @@ def ipa_template_id(ipa: str | os.PathLike) -> str | None:
     return v if isinstance(v, str) else None
 
 
+#: Info.plist key of an IPA exported with the shaders left out: the title IDs whose `<framework>/msl` is not in it. The
+#: iPhone app takes those from `Documents/games/<title ID>/msl` (frontend-ios EngineLaunchPlan: the game's own msl folder
+#: wins over the framework's), and the Wi-Fi share offers them there (wifi_share.py, PCTransfer.swift).
+SHADERS_OUTSIDE_KEY = 'DMShadersOutside'
+
+
+def shader_files(framework: str | os.PathLike) -> list[tuple[str, Path]]:
+    """`('msl/<path>', file)` for each regular file of a game's shader libraries (`<framework>/msl`), hidden ones left out."""
+    msl = Path(framework) / 'msl'
+    if not msl.is_dir():
+        return []
+    out: list[tuple[str, Path]] = []
+    for p in sorted(msl.rglob('*')):
+        rel = p.relative_to(msl)
+        if any(part.startswith('.') for part in rel.parts) or p.is_symlink() or not p.is_file():
+            continue
+        out.append(('msl/' + rel.as_posix(), p))
+    return out
+
+
+def ipa_shaders_outside(ipa: str | os.PathLike) -> list[str]:
+    """The title IDs an IPA was exported without the shaders of (DMShadersOutside), [] for one that carries them all."""
+    v = _ipa_info(ipa).get(SHADERS_OUTSIDE_KEY)
+    return [str(x).upper() for x in v] if isinstance(v, list) else []
+
+
+_outside_cache: dict[tuple, dict[str, list[tuple[str, Path]]]] = {}
+
+
+def outside_shader_files(ipa: str | os.PathLike | None,
+                         root: str | os.PathLike) -> dict[str, list[tuple[str, Path]]]:
+    """Per title ID, the shader files the iPhone needs beside an IPA exported without them, from the games' frameworks in
+    `shell.json` (else their mirror). {} when the IPA carries every game's shaders. Cached on the IPA's and shell.json's
+    modification times: the Wi-Fi share asks on every request."""
+    if ipa is None or not Path(ipa).is_file():
+        return {}
+    state = ShellLibrary.state_file(root)
+    try:
+        key = (str(ipa), Path(ipa).stat().st_mtime_ns, state.stat().st_mtime_ns if state.is_file() else 0)
+    except OSError:
+        return {}
+    if key in _outside_cache:
+        return _outside_cache[key]
+    out: dict[str, list[tuple[str, Path]]] = {}
+    tids = ipa_shaders_outside(ipa)
+    if tids:
+        fws = {g.title_id.upper(): g.framework for g in ShellLibrary.load(root).games}
+        for tid in tids:
+            fw = fws.get(tid)
+            if not fw or not Path(fw).is_dir():
+                fw = mirrored_framework(root, tid)
+            files = shader_files(fw)
+            if files:
+                out[tid] = files
+    _outside_cache.clear()
+    _outside_cache[key] = out
+    return out
+
+
 def ipa_app_version(ipa: str | os.PathLike) -> str | None:
     """The launcher version that exported an IPA (DMLauncherVersion), which the iPhone app shows at the foot of its
     settings. None for one exported before it was recorded."""
@@ -490,11 +557,15 @@ def ipa_app_version(ipa: str | os.PathLike) -> str | None:
     return v if isinstance(v, str) and v else None
 
 
-def _update_shell_plist(staged_app: Path, bundle_id: str, repo: Path) -> None:
+def _update_shell_plist(staged_app: Path, bundle_id: str, repo: Path, shaders_outside: list[str] | None = None) -> None:
     plist_p = staged_app / 'Info.plist'
     with open(plist_p, 'rb') as f:
         info = plistlib.load(f)
     info['CFBundleIdentifier'] = bundle_id
+    if shaders_outside:
+        info[SHADERS_OUTSIDE_KEY] = sorted(shaders_outside)
+    else:
+        info.pop(SHADERS_OUTSIDE_KEY, None)
     info.setdefault('CFBundleDisplayName', 'NX2Apple')
     chain = _dm_chain(repo)
     if chain:
@@ -579,7 +650,12 @@ def _export_shell(
     t_func: Callable[..., str] | None = None,
     log: Callable[[str], None] = lambda _: None,
     stage_cb: Callable[[str, str], None] | None = None,
+    games: list[ShellGame] | None = None,
+    shaders_outside: bool = False,
 ) -> tuple[bool, str, str, list[str]]:
+    """`games`: exactly the games to pack (the "Custom IPA" selection), shell.json left as it is; None packs the library
+    with `framework` added. `shaders_outside`: each game's `<framework>/msl` stays out of the IPA (the iPhone gets it over
+    Wi-Fi into `Documents/games/<title ID>/msl`), recorded as DMShadersOutside in the app's Info.plist."""
     def _t(key: str, *args: object) -> str:
         if t_func is not None:
             return t_func(key, *args)
@@ -591,19 +667,44 @@ def _export_shell(
     tid_norm = title_id.strip().upper() if re.fullmatch(r'[0-9A-Fa-f]{16}', title_id.strip()) else title_id.strip()
     py_exe = _resolve_python_exe(python_exe)
 
+    log(f'export-shell: ===== Starting export_shell =====\n')
+    log(f'export-shell: root={root_p}\n')
+    log(f'export-shell: repo={repo_p}\n')
+    log(f'export-shell: framework={fw_p}\n')
+    log(f'export-shell: title_id={tid_norm}, name={name}\n')
+    log(f'export-shell: python_exe={py_exe}\n')
+    log(f'export-shell: banners_dir={banners_dir}\n')
+    log(f'export-shell: picked_artwork={picked_artwork}\n')
+
     if not fw_p.is_dir():
         folder = fw_p.parent.name or 'shell-framework'
+        log(f'export-shell: ERROR: framework not found at {fw_p}\n')
         return False, '', _t('shell.noFramework', name, folder), []
 
     # 1. Update shell.json and mirror frameworks into <root>/frameworks/
+    log(f'export-shell: [1/5] Loading/updating shell.json and mirroring frameworks...\n')
     sweep_discarded(frameworks_mirror(root_p))
     library = ShellLibrary.load(root_p)
-    library.add(ShellGame(title_id=tid_norm, name=name, framework=str(fw_p)))
-    mirror_frameworks(library, root_p, log=log)
+    log(f'export-shell:   loaded shell.json with {len(library.games)} existing game(s)\n')
+    if games is None:
+        library.add(ShellGame(title_id=tid_norm, name=name, framework=str(fw_p)))
+        log(f'export-shell:   added/updated game: {tid_norm} ({name})\n')
+        mirror_frameworks(library, root_p, log=log)
+    else:
+        # the selection only: shell.json keeps every game, the next full export packs them all again
+        library.games = [ShellGame(title_id=g.title_id, name=g.name, framework=g.framework) for g in games]
+        log(f'export-shell:   packing the {len(library.games)} selected game(s) only\n')
     library.drop_missing()
+    log(f'export-shell:   after mirroring and dropping missing: {len(library.games)} game(s)\n')
+    for g in library.games:
+        log(f'export-shell:     - {g.title_id} ({g.name}): {g.framework}\n')
     notes, err = leave_out_incomplete(library, root_p, tid_norm, name, _t, log=log)
     if err is not None:
+        log(f'export-shell: ERROR: incomplete framework for current game: {err}\n')
         return False, '', _t('shell.projectFailed', err), []
+    if notes:
+        for n in notes:
+            log(f'export-shell:   note: {n}\n')
 
     box_art = covers.covers_dir_beside(banners_dir)
     for g in library.games:
@@ -620,56 +721,85 @@ def _export_shell(
             log(f'cover: {g.title_id} {cover}\n')
 
     try:
-        library.save(root_p)
+        if games is None:
+            library.save(root_p)
+            log(f'export-shell:   shell.json saved\n')
     except OSError as e:
+        log(f'export-shell: ERROR saving shell.json: {e}\n')
         return False, '', _t('shell.projectFailed', str(e)), []
 
     # 2. Stage DmShell.app from the pre-built template
+    log(f'export-shell: [2/5] Staging DmShell.app from template...\n')
     pack_stage_name = _t('shell.exportPackStage')
     if stage_cb:
         stage_cb(pack_stage_name, 'running')
 
     tpl = find_shell_template(repo_p, root=root_p, log=log)
     if tpl is None or not (tpl / SCHEME).is_file():
+        log(f'export-shell: ERROR: template not found or invalid\n')
         if stage_cb:
             stage_cb(pack_stage_name, 'failed')
         return False, '', _t('shell.exportFailed', f'missing {APP_NAME} template'), notes
 
+    log(f'export-shell:   template found at: {tpl}\n')
     tag = uuid.uuid4().hex[:8]
     stage_dir = export_stage(root_p, tag)
     out_ipa = ipa_path(root_p)
     out_ipa.parent.mkdir(parents=True, exist_ok=True)
     tmp_ipa = out_ipa.parent / f'.{IPA_NAME}.{tag}.tmp'
     staged_app = stage_dir / 'Payload' / APP_NAME
+    log(f'export-shell:   stage_dir: {stage_dir}\n')
+    log(f'export-shell:   out_ipa: {out_ipa}\n')
+    log(f'export-shell:   tmp_ipa: {tmp_ipa}\n')
     try:
         _sweep_stages(root_p, keep=stage_dir)
         shutil.rmtree(stage_dir, ignore_errors=True)
         _cleanup_tmp_sidecars(tmp_ipa)
         staged_app.parent.mkdir(parents=True, exist_ok=True)
+        log(f'export-shell:   copying template to stage...\n')
         shutil.copytree(tpl, staged_app, symlinks=True)
         # Ensure template carries no stale embedded frameworks; pack_ipa maps the live ones
         shutil.rmtree(staged_app / 'Frameworks', ignore_errors=True)
 
+        log(f'export-shell: [3/5] Preparing fonts...\n')
         _prepare_fonts(staged_app, repo_p, py_exe)
-        _update_shell_plist(staged_app, library.bundle_id, repo_p)
+        log(f'export-shell:   fonts prepared\n')
+
+        log(f'export-shell: [4/5] Updating shell Info.plist and signing...\n')
+        outside: list[str] = []
+        skips: list[str] = []
+        if shaders_outside:
+            for g in library.games:
+                if (Path(g.framework) / 'msl').is_dir():
+                    outside.append(g.title_id.upper())
+                    skips.append(f'Payload/{APP_NAME}/Frameworks/{Path(g.framework).name}/msl')
+            log(f'export-shell:   shaders left out of the IPA for: {", ".join(outside) or "none"}\n')
+        _update_shell_plist(staged_app, library.bundle_id, repo_p, outside)
+        log(f'export-shell:   Info.plist updated\n')
 
         # Ad-hoc sign DmShell with the Increased Memory Limit entitlement
+        log(f'export-shell:   signing DmShell executable...\n')
         macho_sign.sign(staged_app / SCHEME, library.bundle_id, SHELL_ENTITLEMENTS)
+        log(f'export-shell:   signed\n')
 
         # 3. Pack Payload/DmShell.app and every game's framework into a temporary archive first,
         # then atomically replace export/NX2Apple.ipa so an existing IPA is preserved on failure.
+        log(f'export-shell: [5/5] Packing IPA with pack_ipa.py...\n')
         pack_py = repo_p / 'dm' / 'ios' / 'tools' / 'pack_ipa.py'
         maps: list[str] = []
         executables = [f'Payload/{APP_NAME}/{SCHEME}']
+        log(f'export-shell:   mapping {len(library.games)} game framework(s) into IPA:\n')
         for g in library.games:
             fw_path = Path(g.framework)
             fw_name = fw_path.name
             fw_exe = fw_path.stem
             maps.append(f'Payload/{APP_NAME}/Frameworks/{fw_name}={fw_path}')
             executables.append(f'Payload/{APP_NAME}/Frameworks/{fw_name}/{fw_exe}')
+            log(f'export-shell:     - {fw_name} -> {fw_path}\n')
         maps.append(f'Payload/{APP_NAME}={staged_app}')
 
-        cmd = [py_exe, str(pack_py), str(tmp_ipa), '--no-reuse'] + maps
+        cmd = [py_exe, str(pack_py), str(tmp_ipa), '--no-reuse'] + [a for s in skips for a in ('--skip', s)] + maps
+        log(f'export-shell:   running pack_ipa.py (this may take a while for large frameworks)...\n')
         log(f'[{pack_stage_name}] {" ".join(cmd)}\n')
         r = subprocess.run(
             cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -681,12 +811,17 @@ def _export_shell(
             log(r.stderr)
         if r.returncode != 0 or not tmp_ipa.is_file():
             why = (r.stderr or r.stdout or f'exit {r.returncode}').strip().splitlines()[-1]
+            log(f'export-shell: ERROR: pack_ipa.py failed: {why}\n')
             raise RuntimeError(why)
 
+        log(f'export-shell:   pack_ipa.py succeeded, fixing executable modes...\n')
         mode_summary = fix_ipa_modes.fix(tmp_ipa, executables)
         log(f'{mode_summary}\n')
+        log(f'export-shell:   replacing tmp IPA with final IPA at {out_ipa}\n')
         os.replace(tmp_ipa, out_ipa)
+        log(f'export-shell:   IPA created successfully!\n')
     except Exception as e:
+        log(f'export-shell: EXCEPTION during export: {e}\n')
         if stage_cb:
             stage_cb(pack_stage_name, 'failed')
         return False, '', _t('shell.exportFailed', str(e)), notes
@@ -697,4 +832,5 @@ def _export_shell(
     if stage_cb:
         stage_cb(pack_stage_name, 'done')
     msg = '\n'.join([_t('shell.exportDone', str(out_ipa))] + notes)
+    log(f'export-shell: ===== Export completed successfully =====\n')
     return True, str(out_ipa), msg, notes

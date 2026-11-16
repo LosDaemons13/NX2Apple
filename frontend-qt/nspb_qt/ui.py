@@ -12,6 +12,7 @@ from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent, QFont, 
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -1403,19 +1404,26 @@ class MainWindow(QMainWindow):
 
     def _open_shell_selection(self) -> None:
         """Open dialog to select which built games go into the shared IPA."""
-        from .queue_dialog import ShellIpaSelectionDialog
-        dlg = ShellIpaSelectionDialog(self.m, self)
-        result = dlg.exec()
-        self.m.log(f'_open_shell_selection: dialog result={result}, Accepted={QDialog.Accepted}\n')
-        if result == QDialog.Accepted:
-            chosen = dlg.chosen
-            self.m.log(f'_open_shell_selection: chosen={[(r.title_id, r.name) for r in chosen]}\n')
-            if not chosen:
-                return
-            # Export with only chosen games
-            self._export_selected_shell_games(chosen)
+        self.m.log('_open_shell_selection: ENTER\n')
+        try:
+            from .queue_dialog import ShellIpaSelectionDialog
+            self.m.log('_open_shell_selection: import ok\n')
+            dlg = ShellIpaSelectionDialog(self.m, self)
+            self.m.log('_open_shell_selection: dialog created\n')
+            result = dlg.exec()
+            self.m.log(f'_open_shell_selection: dialog result={result}, Accepted={QDialog.Accepted}\n')
+            if result == QDialog.Accepted:
+                chosen = dlg.chosen
+                self.m.log(f'_open_shell_selection: chosen={[(r.title_id, r.name) for r in chosen]}\n')
+                if not chosen:
+                    return
+                # Export with only chosen games
+                self._export_selected_shell_games(chosen, shaders_outside=dlg.shaders_outside)
+        except Exception as e:
+            import traceback
+            self.m.log(f'_open_shell_selection: EXCEPTION={e}\n{traceback.format_exc()}\n')
 
-    def _export_selected_shell_games(self, chosen: list) -> None:
+    def _export_selected_shell_games(self, chosen: list, shaders_outside: bool = False) -> None:
         """Export shared IPA with only the selected games."""
         self.m.log('_export_selected_shell_games: called\n')
         import threading
@@ -1428,30 +1436,47 @@ class MainWindow(QMainWindow):
         custom = dict(self.m.artwork.custom_paths)
         t = self.m.t
 
+        # Log selected games with their frameworks
+        self.m.log(f'export-selected: selected {len(chosen)} game(s):\n')
+        for r in chosen:
+            fw_exists = Path(r.framework).is_dir()
+            self.m.log(f'  - {r.title_id} ({r.name}): framework={r.framework} exists={fw_exists}\n')
+
         # First game with a valid framework (for template info)
         first = next((r for r in chosen if Path(r.framework).is_dir()), None)
         if first is None:
             QMessageBox.warning(self, t('shell.selectTitle'), t('shell.noFramework', chosen[0].name, 'shell-framework'))
             return
 
-        # Build a temporary shell.json with only chosen games
-        lib = se.ShellLibrary.load(root)
-        lib.games = [se.ShellGame(title_id=r.title_id, name=r.name, framework=r.framework) for r in chosen]
+        # Only the chosen games go into the IPA (shell.json keeps the whole library)
+        selected = [se.ShellGame(title_id=r.title_id, name=r.name, framework=r.framework) for r in chosen]
+        self.m.log(f'export-selected: packing {len(selected)} game(s), shaders outside the IPA={shaders_outside}\n')
 
-        # Export
+        # Export - log progress via stage_cb
         def work() -> None:
+            def stage_cb(stage: str, state: str) -> None:
+                self.m.log(f'export-selected: stage="{stage}" state="{state}"\n')
+
             try:
-                self.m.log('export-selected: starting...\n')
+                self.m.log('export-selected: ===== Starting IPA export =====\n')
                 self.m.log(f'export-selected: root={root}\n')
                 self.m.log(f'export-selected: engine={engine}\n')
-                self.m.log(f'export-selected: first={first.framework}\n')
+                self.m.log(f'export-selected: first_game={first.title_id} ({first.name})\n')
+                self.m.log(f'export-selected: first_framework={first.framework}\n')
+                self.m.log(f'export-selected: python_exe={python_exe}\n')
+                self.m.log(f'export-selected: banners_dir={banners}\n')
                 ok, out_ipa, msg, notes = se.export_shell(
                     root=root, repo=engine, framework=first.framework,
                     title_id=first.title_id, name=first.name,
                     python_exe=python_exe, banners_dir=banners,
                     picked_artwork=custom.get(first.title_id.upper()),
-                    t_func=t)
-                self.m.log(f'export-selected: ok={ok}, out_ipa={out_ipa}, msg={msg}\n')
+                    t_func=t, stage_cb=stage_cb, log=self.m.log,
+                    games=selected, shaders_outside=shaders_outside)
+                self.m.log(f'export-selected: ===== Export finished: ok={ok} =====\n')
+                self.m.log(f'export-selected: out_ipa={out_ipa}\n')
+                self.m.log(f'export-selected: msg={msg}\n')
+                if notes:
+                    self.m.log(f'export-selected: notes={notes}\n')
                 if ok:
                     self.m.ipa_path = out_ipa
                     self.m.log(t('shell.exportDone', out_ipa) + '\n')
@@ -1460,7 +1485,7 @@ class MainWindow(QMainWindow):
                     QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, msg))
             except Exception as e:
                 import traceback
-                self.m.log(f'export-selected: exception={e}\n{traceback.format_exc()}\n')
+                self.m.log(f'export-selected: EXCEPTION={e}\n{traceback.format_exc()}\n')
                 QMetaObject.invokeMethod(self, '_show_export_failed', Qt.QueuedConnection, Q_ARG(str, str(e) or type(e).__name__))
 
         threading.Thread(target=work, name='export-selected-shell', daemon=True).start()

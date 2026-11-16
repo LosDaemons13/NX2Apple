@@ -2063,6 +2063,8 @@
   "shell.selectNote": "Cochez les jeux déjà compilés à inclure. Les jeux incomplets ne peuvent pas être sélectionnés.",
   "shell.selectReady": "Framework prêt",
   "shell.selectMissing": "Framework manquant (recompilez le jeu)",
+  "shell.selectShadersOut": "Shaders hors de l'IPA",
+  "shell.selectShadersOutNote": "Les shaders sont l'essentiel de l'IPA, plusieurs Go par jeu. Laissés à part, l'IPA reste assez petite pour FlareStore. L'app iPhone les récupère avec les données du jeu dans Recevoir du PC.",
   "shell.selectTotal": "%d jeu(x) sélectionné(s)",
   "shell.selectExport": "Créer l'IPA (%d)",
   "shellCache.busy": "Une compilation ou une installation est en cours. Déplacez le cache quand elle est terminée.",

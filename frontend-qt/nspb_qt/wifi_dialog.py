@@ -34,7 +34,7 @@ class WifiShareDialog(QDialog):
         self.setMinimumSize(640, 560)
         self.setStyleSheet(style.STYLESHEET)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.server = ws.ShareServer(ipa=self._ipa, games=lambda: ws.shared_games(self.m.library.games), page=self._page)
+        self.server = ws.ShareServer(ipa=self._ipa, games=self._games, page=self._page)
         self.error = ''
         try:
             self.server.start()
@@ -147,6 +147,16 @@ class WifiShareDialog(QDialog):
     def _ipa(self) -> Path | None:
         return self.ipa_path if self.ipa_path.is_file() else None
 
+    def _games(self) -> list[ws.SharedGame]:
+        """The games' data, and the shaders of the games the IPA was exported without (they go to games/<id>/msl)."""
+        from .win import shell_export as se
+        try:
+            extras = se.outside_shader_files(self._ipa(), self.m.shell_cache_path)
+        except Exception as e:   # a request must never take the window down
+            self.m.log(f'wifi: the shaders left out of the IPA could not be listed: {e}\n')
+            extras = {}
+        return ws.shared_games(self.m.library.games, extras)
+
     def _page(self, cat: dict, base: str) -> str:
         t = self.m.t
         return ws.render_page(cat, {
@@ -172,7 +182,7 @@ class WifiShareDialog(QDialog):
             status = t('wifi.ipaStatus', _gb(st.st_size), time.strftime('%H:%M', time.localtime(st.st_mtime)))
             version = self._ipa_version
             self.ipa_status.setText(f"{status}\n{t('wifi.ipaVersion', version)}" if version else status)
-        games = ws.shared_games(self.m.library.games)
+        games = self._games()
         self.games_label.setText(', '.join(f'{g.name} ({_gb(sum(s for _, s in g.files()))})' for g in games)
                                  if games else t('wifi.noData'))
 
@@ -206,6 +216,8 @@ class WifiShareDialog(QDialog):
         root, engine = self.m.shell_cache_path, self.m.engine_path
         python_exe, banners = self.m.python_path or '', self.m.artwork.banners_dir
         custom = dict(self.m.artwork.custom_paths)
+        ipa = self._ipa()
+        outside = bool(ipa is not None and se.ipa_shaders_outside(ipa))   # made again as it was: shaders in or out
         job: dict = {'done': False, 'error': ''}
         self._remake = job
 
@@ -216,13 +228,19 @@ class WifiShareDialog(QDialog):
                 if first is None:
                     job['error'] = self.m.t('wifi.noIpa')
                     return
+                self.m.log(f'wifi-remake-ipa: ===== Starting Wi-Fi IPA remake =====\n')
+                self.m.log(f'wifi-remake-ipa: first_game={first.title_id} ({first.name})\n')
+                self.m.log(f'wifi-remake-ipa: framework={first.framework}\n')
                 ok, _out, msg, _notes = se.export_shell(
                     root=root, repo=engine, framework=first.framework, title_id=first.title_id, name=first.name,
                     python_exe=python_exe, banners_dir=banners, picked_artwork=custom.get(first.title_id.upper()),
-                    t_func=self.m.t)
+                    t_func=self.m.t, log=self.m.log, shaders_outside=outside)
+                self.m.log(f'wifi-remake-ipa: ===== Remake finished: ok={ok} =====\n')
+                self.m.log(f'wifi-remake-ipa: out={_out}, msg={msg}\n')
                 if not ok:
                     job['error'] = msg
             except Exception as e:   # a thread must never take the window down
+                self.m.log(f'wifi-remake-ipa: EXCEPTION={e}\n')
                 job['error'] = str(e) or type(e).__name__
             finally:
                 job['done'] = True

@@ -3353,6 +3353,11 @@ class Model(QObject):
 
         py = self.python_path or sys.executable
         picked = self.artwork.custom_paths.get(tid.upper())
+        self.log(f'export-shell-after-archive: ===== Starting export after archive =====\n')
+        self.log(f'export-shell-after-archive: tid={tid}, game_name={game_name}\n')
+        self.log(f'export-shell-after-archive: framework={fw}\n')
+        self.log(f'export-shell-after-archive: shell_cache={self.shell_cache_path}\n')
+        self.log(f'export-shell-after-archive: engine_path={self.engine_path}\n')
         ok, out_ipa, msg, _notes = se.export_shell(
             root=self.shell_cache_path,
             repo=self.engine_path,
@@ -3366,6 +3371,9 @@ class Model(QObject):
             log=self.log,
             stage_cb=on_stage,
         )
+        self.log(f'export-shell-after-archive: ===== Export finished: ok={ok} =====\n')
+        self.log(f'export-shell-after-archive: out_ipa={out_ipa}\n')
+        self.log(f'export-shell-after-archive: msg={msg}\n')
         if ok:
             self.ipa_path = out_ipa
             self._record_library_ios_completion(tid, name=game_name)

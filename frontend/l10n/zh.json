@@ -2063,6 +2063,8 @@
   "shell.selectNote": "勾选已编译的游戏以包含在内。未完成的游戏无法选择。",
   "shell.selectReady": "Framework 就绪",
   "shell.selectMissing": "Framework 缺失（重新编译游戏）",
+  "shell.selectShadersOut": "着色器不放入 IPA",
+  "shell.selectShadersOutNote": "着色器占 IPA 的大部分，每个游戏数 GB。不放入时 IPA 足够小，FlareStore 可以安装。iPhone 应用会在“从电脑接收”中与游戏数据一起获取它们。",
   "shell.selectTotal": "已选择 %d 个游戏",
   "shell.selectExport": "创建 IPA (%d)",
   "shellCache.busy": "正在构建或安装。完成后再移动缓存。",

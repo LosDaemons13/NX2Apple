@@ -195,6 +195,26 @@ class ShellIpaSelectionDialog(QDialog):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self.scroll, 1)
 
+        # The shaders are most of an IPA (several GB per game): left out, it stays small enough for FlareStore, and the
+        # iPhone app fetches them with the games' data (Receive from PC) into Documents/games/<title ID>/msl.
+        self.shaders_outside = True
+        out_row = QHBoxLayout()
+        out_row.setSpacing(12)
+        self.shaders_switch = LauncherSwitch(checked=self.shaders_outside)
+        self.shaders_switch.toggled.connect(self._toggle_shaders)
+        out_row.addWidget(self.shaders_switch, 0, Qt.AlignTop)
+        out_col = QVBoxLayout()
+        out_col.setSpacing(2)
+        out_title = QLabel(t('shell.selectShadersOut'))
+        out_title.setObjectName('rowTitle')
+        out_col.addWidget(out_title)
+        out_note = QLabel(t('shell.selectShadersOutNote'))
+        out_note.setObjectName('muted')
+        out_note.setWordWrap(True)
+        out_col.addWidget(out_note)
+        out_row.addLayout(out_col, 1)
+        lay.addLayout(out_row)
+
         foot = QHBoxLayout()
         self.total_lbl = QLabel('')
         self.total_lbl.setObjectName('muted')
@@ -283,6 +303,11 @@ class ShellIpaSelectionDialog(QDialog):
         self.m.log(f'select-dialog: toggled {title_id}={on}\n')
         QTimer.singleShot(0, self._render)
 
+    def _toggle_shaders(self, on: bool) -> None:
+        self.shaders_outside = on
+        self.m.log(f'select-dialog: shaders outside the IPA={on}\n')
+
     def accept(self) -> None:
-        self.m.log(f'select-dialog: accept, chosen={[(r.title_id, r.name) for r in self.chosen]}\n')
+        self.m.log(f'select-dialog: accept, chosen={[(r.title_id, r.name) for r in self.chosen]}, '
+                   f'shaders_outside={self.shaders_outside}\n')
         super().accept()

@@ -42,12 +42,22 @@ def new_code(n: int = 6) -> str:
 class SharedGame:
     title_id: str
     name: str
-    folder: Path          # the game's data folder: romfs.img (or romfs/), romfs.img.id, aoc/…
+    folder: Path | None   # the game's data folder: romfs.img (or romfs/), romfs.img.id, aoc/… (None: only extras)
+    #: Files offered from elsewhere, as (path in the game's iPhone folder, file): the shaders of an IPA exported without
+    #: them (`msl/b-<chain>.img` from the game's framework), which the iPhone app reads from Documents/games/<id>/msl.
+    extras: tuple[tuple[str, Path], ...] = ()
 
     def files(self) -> list[tuple[str, int]]:
-        """(path relative to the folder, with '/', size) of each regular file inside, links and hidden files left out."""
+        """(path relative to the folder, with '/', size) of each regular file inside, links and hidden files left out,
+        then the extras that still exist."""
         out: list[tuple[str, int]] = []
+        for rel, p in self.extras:
+            if p.is_file():
+                out.append((rel, p.stat().st_size))
         root = self.folder
+        if root is None:
+            return sorted(out)
+        taken = {rel for rel, _ in out}
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith('.') and not os.path.islink(os.path.join(dirpath, d)))
             for name in sorted(filenames):
@@ -56,8 +66,25 @@ class SharedGame:
                 p = Path(dirpath, name)
                 if p.is_symlink() or not p.is_file():
                     continue
-                out.append((p.relative_to(root).as_posix(), p.stat().st_size))
+                rel = p.relative_to(root).as_posix()
+                if rel not in taken:
+                    out.append((rel, p.stat().st_size))
         return sorted(out)
+
+    def path_of(self, rel: str) -> Path | None:
+        """The file a listed path names, None for one that is not listed."""
+        if rel not in {p for p, _ in self.files()}:
+            return None
+        for r, p in self.extras:
+            if r == rel:
+                return p
+        return self.folder / rel if self.folder is not None else None
+
+    def folders(self) -> list[Path]:
+        """Where transfers of this game leave their links (clear_snapshots)."""
+        out = [self.folder] if self.folder is not None else []
+        out += sorted({p.parent for _, p in self.extras})
+        return out
 
 
 def data_folder(game) -> Path | None:
@@ -83,13 +110,20 @@ def data_folder(game) -> Path | None:
     return next((c for c in cands if holds_data(c)), None)
 
 
-def shared_games(library_games: Iterable) -> list[SharedGame]:
+def shared_games(library_games: Iterable, extras: dict[str, list[tuple[str, Path]]] | None = None) -> list[SharedGame]:
+    """The library's games with built data, each with its `extras` (per title ID). A game with extras and no data
+    folder is offered for its extras alone."""
+    extras = {k.upper(): v for k, v in (extras or {}).items()}
     out, seen = [], set()
     for g in library_games:
+        tid = (g.title_id or '').upper()
+        if tid in seen:
+            continue
         folder = data_folder(g)
-        if folder is not None and g.title_id.upper() not in seen:
-            seen.add(g.title_id.upper())
-            out.append(SharedGame(g.title_id.upper(), g.name or g.title_id, folder))
+        more = tuple(extras.get(tid, ()))
+        if folder is not None or more:
+            seen.add(tid)
+            out.append(SharedGame(tid, g.name or g.title_id, folder, more))
     return out
 
 
@@ -228,7 +262,7 @@ class ShareServer:
     def clear(self) -> None:
         """Remove the links transfers left beside the IPA and in each game's data folder."""
         ipa = self.ipa()
-        folders = ([ipa.parent] if ipa is not None else []) + [g.folder for g in self.games()]
+        folders = ([ipa.parent] if ipa is not None else []) + [d for g in self.games() for d in g.folders()]
         clear_snapshots(folders)
 
     @property
@@ -262,8 +296,7 @@ class ShareServer:
         tid, inner = m.group(1).upper(), m.group(2)
         for g in self.games():
             if g.title_id == tid:
-                listed = {p for p, _ in g.files()}
-                return g.folder / inner if inner in listed else None
+                return g.path_of(inner)
         return None
 
 
