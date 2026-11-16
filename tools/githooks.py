@@ -43,7 +43,11 @@ def git(*a, env=None):
 
 
 def sh(command, cwd):
-    """A check runs in a clean environment: the repository that runs the hook (GIT_DIR in a worktree) is not the one the tests use."""
+    """A check runs in a clean environment: the repository that runs the hook (GIT_DIR in a worktree) is not the one the tests use.
+    A command's python3 is the interpreter running this hook: on Windows the shell is cmd.exe, which may not find python3
+    where the hook's sh did (GitHub Desktop: "'python3' n'est pas reconnu")."""
+    if command.startswith('python3 ') and sys.executable:
+        command = f'"{sys.executable}" ' + command[len('python3 '):]
     return subprocess.run(command, shell=True, cwd=cwd, env=P.clean_env()).returncode
 
 
