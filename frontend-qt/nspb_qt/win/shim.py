@@ -462,6 +462,7 @@ if os.name == 'nt' and not os.environ.get('NSPB_SHIM_OFF'):
         mod._PathOps.sep = '/'
         _orig_join = os.path.join
         _orig_normpath = os.path.normpath
+        _orig_abspath = os.path.abspath
 
         def _posix_join(*a):
             res = _orig_join(*a)
@@ -471,9 +472,17 @@ if os.name == 'nt' and not os.environ.get('NSPB_SHIM_OFF'):
             res = _orig_normpath(path)
             return res.replace('\\', '/') if isinstance(res, str) else res.replace(b'\\', b'/')
 
+        # ntpath.abspath turns every '/' into '\', while join and walk above give '/': uepak.inline_in_containers
+        # compared dirname(abspath(pak)) with dirname(toc.path), never equal, so Mario & Luigi: Brothership's
+        # inline shaders were taken for shader code archives and the build stopped at "UE shader decode"
+        def _posix_abspath(path):
+            res = _orig_abspath(path)
+            return res.replace('\\', '/') if isinstance(res, str) else res.replace(b'\\', b'/')
+
         mod._PathOps.join = staticmethod(_posix_join)
         mod._PathOps.relpath = staticmethod(_posix_relpath)
         mod._PathOps.normpath = staticmethod(_posix_normpath)
+        mod._PathOps.abspath = staticmethod(_posix_abspath)
 
     def _patch_sdk_patches_module(mod):
         jf = os.environ.get('NSPB_AUTO_SDK_CUTS')

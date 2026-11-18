@@ -2290,6 +2290,12 @@ class WindowsBuildFixesTest(unittest.TestCase):
             self.assertEqual(romfs.os.path.normpath('Shader\\sub\\test.bin'), 'Shader/sub/test.bin')
             self.assertEqual(romfs.os.path.relpath(str(src_path) + '/Shader/sub/test.bin', str(src_path)),
                              'Shader/sub/test.bin')
+            # uepak.inline_in_containers compares dirname(abspath(pak)) with the folder of each container the walk
+            # finds: with ntpath's '\' on one side and '/' on the other they never matched (Mario & Luigi: Brothership)
+            self.assertNotIn('\\', romfs.os.path.abspath(str(img_path)))
+            inside = romfs.os.path.join(str(src_path), 'Shader', 'sub', 'test.bin')
+            self.assertEqual(romfs.os.path.dirname(romfs.os.path.abspath(inside)),
+                             next(r for r, _, fs in walked if 'test.bin' in fs))
 
     def test_macho_sign_produces_valid_adhoc_signature_with_entitlements(self) -> None:
         from nspb_qt.win import macho_sign
