@@ -661,6 +661,14 @@ class Decoder:
 
         assert self.m is not None
         m = self.m
+        # Unicorn 2.1.4's translated code piles up from one request to the next until it overruns its buffer and the
+        # whole process dies (Windows: "access violation writing 0x...3FC35000" in uc_emu_start). Pokémon Legends:
+        # Arceus's GFPAK entries killed each shader split worker after about 185 MB decoded (the 182nd of its 1-5 MB
+        # streams), and every request after that failed with Errno 22: 141 files lost. Flushed before each request,
+        # 800 of them ran through, and 1,000 small ones took no longer (25 s against 26 s)
+        flush = getattr(m.uc, 'ctl_flush_tb', None)
+        if flush is not None:
+            flush()
         m.heap_reset(self.mark)
         cl = len(comp)
         c = self.in_buf if cl <= self.in_cap else m.malloc(cl or 1)

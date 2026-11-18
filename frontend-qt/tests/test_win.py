@@ -5370,6 +5370,41 @@ class OodleEmuWinTest(unittest.TestCase):
             or r"the game\'s decoder in the Mac host" in texts
         )
 
+    def test_each_request_flushes_unicorns_translated_code_first(self) -> None:
+        """Unicorn 2.1.4's translated code piled up from request to request until the process died (Pokémon Legends: Arceus,
+        the 182nd of its 1-5 MB GFPAK streams, "access violation writing"): the cache is flushed before each request"""
+        OE, E = self.oodle_emu, self.arm64_emu
+        if E._HAS_UNICORN:
+            self.assertTrue(hasattr(E.Uc, 'ctl_flush_tb'), 'the pinned unicorn must have ctl_flush_tb, or the flush is skipped')
+        order: list[str] = []
+
+        class FakeUc:
+            def ctl_flush_tb(self) -> None:
+                order.append('flush')
+
+        class FakeMachine:
+            uc = FakeUc()
+
+            def heap_reset(self, mark: int) -> None:
+                order.append('reset')
+
+            def write(self, a: int, b: bytes) -> None:
+                pass
+
+            def call_fast(self, fn: int, *args: int, **kw: object) -> int:
+                order.append('call')
+                return 4
+
+            def read(self, a: int, n: int) -> bytes:
+                return b'\x01' * n
+
+        dec = object.__new__(OE.Decoder)
+        dec.native_dll, dec.m, dec.kind, dec.fn, dec.mark = None, FakeMachine(), 'OodleLZ_Decompress', 0x2000, 0
+        dec.in_buf, dec.in_cap, dec.out_buf, dec.out_cap, dec._oodle_stack = 0x3000, 1 << 20, 0x4000, 1 << 20, b''
+        self.assertEqual(dec.run(b'abcd', 4), b'\x01' * 4)
+        self.assertEqual(dec.run(b'abcd', 4), b'\x01' * 4)
+        self.assertEqual(order, ['flush', 'reset', 'call'] * 2)
+
     def test_find_native_oodle_dll_accepts_only_explicit_locations(self) -> None:
         OE = self.oodle_emu
         with tempfile.TemporaryDirectory() as td, \
