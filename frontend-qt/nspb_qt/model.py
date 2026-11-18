@@ -397,6 +397,7 @@ class Model(QObject):
                     return False, self.t('shellCache.problem.taken')
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(src, dst, dirs_exist_ok=True)
+                self._relocate_shell_frameworks(src, dst)
                 shutil.rmtree(src, ignore_errors=True)
             else:
                 dst.mkdir(parents=True, exist_ok=True)
@@ -3314,6 +3315,13 @@ class Model(QObject):
         if ok:
             self._record_library_ios_completion(tid if (title_id or re.fullmatch(r'[0-9A-Fa-f]{16}', tid)) else None)
         return ok, '' if ok else self.t('msg.archiveFailed')
+
+    @staticmethod
+    def _relocate_shell_frameworks(src: Path, dst: Path) -> None:
+        """move_shell_cache, once the folder is copied: shell.json names the mirrored frameworks by full path, and left as
+        they were they pointed into the removed folder, so the shared IPA's game selection offered none of them"""
+        from .win import shell_export as se
+        se.relocate(src, dst)
 
     def _export_shell_after_archive(self, archive_ok: bool, archive_note: str) -> tuple[bool, str]:
         if not archive_ok:

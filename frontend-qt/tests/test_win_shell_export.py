@@ -313,5 +313,52 @@ class OneExportAtATimeTest(unittest.TestCase):
             self.assertEqual(se.export_stage(root, 'ab12cd34').name, 'stage-ab12cd34')
 
 
+# ---------------------------------------------------------------- the frameworks shell.json names
+
+
+class ShellLibraryPathsTest(unittest.TestCase):
+    """The shared app's folder moved (Settings, Model.move_shell_cache) copied shell.json as it was: its frameworks kept
+    the old folder's paths, which the move removed, and the game selection offered Mario Strikers with no framework
+    although its copy was in <new folder>/frameworks/."""
+
+    TID = '010019401051C000'
+    OTHER = '0400A3A01EE4C000'
+
+    def _write(self, root: Path, games: list[tuple[str, str]]) -> None:
+        from nspb_qt.win import shell_export as se
+        se.ShellLibrary(games=[se.ShellGame(title_id=t, name=t, framework=f) for t, f in games]).save(root)
+
+    def test_load_takes_the_mirror_for_a_framework_that_is_gone(self) -> None:
+        from nspb_qt.win import shell_export as se
+        with tempfile.TemporaryDirectory() as tmp:
+            root, build = Path(tmp, 'shell'), Path(tmp, 'build', f'DmGame{self.OTHER}.framework')
+            se.mirrored_framework(root, self.TID).mkdir(parents=True)
+            build.mkdir(parents=True)
+            gone = str(Path(tmp, 'old', 'frameworks', f'DmGame{self.TID}.framework'))
+            nowhere = str(Path(tmp, 'old', 'frameworks', 'DmGame0100000000010000.framework'))
+            self._write(root, [(self.TID, gone), (self.OTHER, str(build)), ('0100000000010000', nowhere)])
+            got = {g.title_id: g.framework for g in se.ShellLibrary.load(root).games}
+        self.assertEqual(got[self.TID], str(se.mirrored_framework(root, self.TID)))
+        self.assertEqual(got[self.OTHER], str(build), 'a framework that is there stays')
+        self.assertEqual(got['0100000000010000'], nowhere, 'with no copy either, the game shows no framework')
+
+    def test_relocate_points_the_mirrored_frameworks_at_the_new_folder(self) -> None:
+        import shutil
+        from nspb_qt.win import shell_export as se
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp, 'old', 'shell'), Path(tmp, 'new', 'shell')
+            build = Path(tmp, 'build', f'DmGame{self.OTHER}.framework')
+            se.mirrored_framework(old, self.TID).mkdir(parents=True)
+            build.mkdir(parents=True)
+            self._write(old, [(self.TID, str(se.mirrored_framework(old, self.TID))), (self.OTHER, str(build))])
+            shutil.copytree(old, new)
+            se.relocate(old, new)
+            shutil.rmtree(old)
+            saved = {g['titleID']: g['framework']
+                     for g in __import__('json').loads((new / 'shell.json').read_text(encoding='utf-8'))['games']}
+        self.assertEqual(Path(saved[self.TID]), se.mirrored_framework(new, self.TID))
+        self.assertEqual(Path(saved[self.OTHER]), build, 'a framework outside the folder stays where it is')
+
+
 if __name__ == '__main__':
     unittest.main()

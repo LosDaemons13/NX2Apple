@@ -83,6 +83,12 @@ class ShellLibrary:
                 if isinstance(item, dict):
                     g = ShellGame.from_dict(item)
                     if g is not None:
+                        # The copy in <root>/frameworks/ stands for a framework that is not where shell.json says: the
+                        # folder was moved before relocate() existed (its paths kept the old folder's, so the selection
+                        # showed Mario Strikers with no framework) or the game's build folder was removed
+                        mirror = mirrored_framework(root, g.title_id)
+                        if not os.path.isdir(g.framework) and mirror.is_dir():
+                            g.framework = str(mirror)
                         games.append(g)
             return cls(bundle_id=bundle_id, team=team, games=games)
         except Exception:
@@ -241,6 +247,24 @@ def mirror_framework(framework: str | os.PathLike, root: str | os.PathLike,
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return mirror
+
+
+def relocate(old_root: str | os.PathLike, new_root: str | os.PathLike) -> None:
+    """After the shared app's folder was copied from `old_root` to `new_root` (Model.move_shell_cache): the `shell.json`
+    there names the frameworks mirrored under `old_root` by their old paths. Point them at the copies; a framework
+    elsewhere (a game's build folder) stays where it is."""
+    library = ShellLibrary.load(new_root)
+    old = Path(old_root).resolve()
+    moved = False
+    for g in library.games:
+        try:
+            inside = Path(g.framework).resolve().relative_to(old)
+        except ValueError:
+            continue
+        g.framework = str(Path(new_root) / inside)
+        moved = True
+    if moved:
+        library.save(new_root)
 
 
 def mirror_frameworks(library: ShellLibrary, root: str | os.PathLike,
