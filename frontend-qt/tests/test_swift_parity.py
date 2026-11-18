@@ -335,6 +335,14 @@ class SharedShellParityTests(unittest.TestCase):
             p = mock.patch.object(Model, 'check_deps', lambda self: None)
             p.start()
             self.addCleanup(p.stop)
+            # start_build runs shim.build_env on Windows, which rewrites the shim folder (sitecustomize.py, xcrun.cmd)
+            # with this checkout's package path. Under the real %LOCALAPPDATA% that is the launcher's own folder: a
+            # pre-push run from a temporary worktree left it pointing at the removed worktree, and the build running at
+            # the time failed at its game framework step (No module named 'xcrun_shim', Super Mario Odyssey)
+            from nspb_qt.win import shim as wshim
+            p_shim = mock.patch.object(wshim, 'shim_dir', return_value=root / 'shim')
+            p_shim.start()
+            self.addCleanup(p_shim.stop)
 
             m = Model()
             m.repo_path = str(eng if real_bundle else ROOT)
@@ -488,6 +496,8 @@ class SharedShellParityTests(unittest.TestCase):
                 _wait_outcomes()
                 self.assertTrue(outcomes and outcomes[-1][0], f'Game 2 build failed: {outcomes}')
 
+            # build_env ran for both builds, into this test's shim folder and not the launcher's
+            self.assertTrue((root / 'shim' / 'sitecustomize.py').is_file())
             self.assertTrue(ext_font_calls, '_prepare_fonts must invoke make_ext_font.py')
             self.assertEqual(Path(ext_font_calls[0][3]), letter_font)
 
@@ -1762,6 +1772,12 @@ class ParityWindowTests(unittest.TestCase):
             p = mock.patch.object(Model, 'check_deps', lambda self: None)
             p.start()
             self.addCleanup(p.stop)
+            # start_build's shim.build_env rewrites the shim folder: never the launcher's own under %LOCALAPPDATA%
+            # (test_shared_mode_two_games_same_out_dir_packaged_win_and_sidecar_cleanup says what that broke)
+            from nspb_qt.win import shim as wshim
+            p_shim = mock.patch.object(wshim, 'shim_dir', return_value=root / 'shim')
+            p_shim.start()
+            self.addCleanup(p_shim.stop)
 
             m = Model()
             m.repo_path = str(ROOT)
