@@ -2723,6 +2723,10 @@ class WindowsBuildFixesTest(unittest.TestCase):
             import capstone  # noqa: F401
         except ImportError:
             self.skipTest('lz4 and capstone required')
+        # Without lz4, LoveShadersWinTest._make_nso0 leaves a zlib stand-in in sys.modules for the rest of the run: its
+        # 0x12c000-byte text came out as 0x511 bytes, a ratio no LZ4 block has, and patch_nso refused the file
+        if not getattr(lz4.block, '__file__', None):
+            self.skipTest('lz4 required (only a stand-in is loaded)')
         patch_nso = QT.parent / 'engine/dm/tools/patch_nso.py'
         if not patch_nso.is_file():
             self.skipTest('engine/ is missing')
