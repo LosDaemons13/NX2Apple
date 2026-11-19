@@ -26,10 +26,15 @@ class AppUpdateTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_qt_app_version_matches_swift_app_update_store(self) -> None:
+        """The version written in app_update.py, not the one a fork's build gives it at run time: fork_build.json (git-ignored,
+        written beside it by the fork's workflow and by a local build) sets APP_VERSION to the fork's own version, 1.4.0.27"""
         swift_store = (ROOT / 'frontend' / 'Sources' / 'NXModel' / 'AppUpdateStore.swift').read_text(encoding='utf-8')
         m = re.search(r'static let appVersion = "([^"]+)"', swift_store)
         self.assertIsNotNone(m, 'AppUpdateStore.appVersion not found')
-        self.assertEqual(app_update.APP_VERSION, m.group(1))
+        source = Path(app_update.__file__).read_text(encoding='utf-8')
+        qt = re.search(r"^APP_VERSION = '([^']+)'", source, re.M)
+        self.assertIsNotNone(qt, 'APP_VERSION not found in app_update.py')
+        self.assertEqual(qt.group(1), m.group(1))
 
     def test_build_qt_workflow_builds_nx2apple_exe_not_ns_port_builder(self) -> None:
         wf = (ROOT / '.github' / 'workflows' / 'build-qt.yml').read_text(encoding='utf-8')
