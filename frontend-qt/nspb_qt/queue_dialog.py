@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScroll
 from . import style
 from .build_estimate import format_duration
 from .build_queue import QueueRow
+from .title_order import alphabetical
 from .widgets import CardGroup, LauncherSwitch
 
 if TYPE_CHECKING:
@@ -19,13 +20,10 @@ if TYPE_CHECKING:
 
 
 def initial_order(rows: list[QueueRow], waiting: list[str] = ()) -> list[QueueRow]:
-    """Games already waiting first, in the queue's order; then the others in the library's order; last, the rows that
-    cannot be ticked (the game being built, games whose files are gone)."""
-    rank = {tid.upper(): i for i, tid in enumerate(waiting)}
-    queued = sorted((r for r in rows if r.title_id.upper() in rank), key=lambda r: rank[r.title_id.upper()])
-    rest = [r for r in rows if r.title_id.upper() not in rank and r.enabled]
-    fixed = [r for r in rows if r.title_id.upper() not in rank and not r.enabled]
-    return queued + rest + fixed
+    """Every game in alphabetical order (title_order.py), so the ticked ones are built in alphabetical order too. ▲ / ▼
+    still move a game. `waiting` (the queue under way) no longer sets the order: the queue the dialog makes is
+    alphabetical as well."""
+    return alphabetical(rows)
 
 
 class BuildQueueDialog(QDialog):
@@ -235,7 +233,7 @@ class ShellIpaSelectionDialog(QDialog):
         root = Path(self.m.shell_cache_path)
         library = se.ShellLibrary.load(root)
         self.rows: list[ShellGameRow] = []
-        for g in library.games:
+        for g in alphabetical(library.games, name=lambda g: g.name or g.title_id):   # the IPA packs them in this order
             fw_exists = Path(g.framework).is_dir()
             self.rows.append(ShellGameRow(
                 title_id=g.title_id,

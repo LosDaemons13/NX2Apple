@@ -46,6 +46,7 @@ from .i18n import Lang
 from .log_view import LogView, LogWindow
 from .model import Dep, DepState, Model
 from .sheets import CheatsDialog, DefenderPromptDialog, DeleteGameDialog, FreeSpaceDialog, OnboardingDialog
+from .title_order import alphabetical
 from .widgets import (
     CardGroup,
     CardPageHeading,
@@ -622,7 +623,8 @@ class MainWindow(QMainWindow):
         return page
 
     def _filtered_games(self) -> list[lib.LibraryGame]:
-        games = list(self.m.library.games)
+        """The collection's games, in alphabetical order (title_order.py), filtered."""
+        games = alphabetical(self.m.library.games)
         if self._library_filter == 'built':
             games = [g for g in games if g.has_any_build]
         if self._search_query:

@@ -317,21 +317,21 @@ class QueueInTheWindowTests(unittest.TestCase):
                 QueueRow('D', 'Delta', 'queued', True, True)]
         dlg = BuildQueueDialog(self.m, rows, adding=True, waiting=['D'])
         self.addCleanup(dlg.deleteLater)
-        self.assertEqual([r.title_id for r in dlg.rows], ['D', 'A', 'B', 'C', 'R'], 'waiting first, the fixed rows last')
-        self.assertEqual(dlg.chosen, ['D', 'A', 'C'])
+        self.assertEqual([r.title_id for r in dlg.rows], ['A', 'B', 'C', 'D', 'R'], 'alphabetical, a waiting game too')
+        self.assertEqual(dlg.chosen, ['A', 'C', 'D'], 'so the queue is built in alphabetical order')
         dlg._move('C', -1)
         self._settle()
-        self.assertEqual(dlg.chosen, ['D', 'A', 'C'], 'C passed B, which is not ticked')
+        self.assertEqual(dlg.chosen, ['A', 'C', 'D'], 'C passed B, which is not ticked')
         dlg._move('C', -1)
         self._settle()
-        self.assertEqual(dlg.chosen, ['D', 'C', 'A'])
-        dlg._move('D', -1)   # already first: nothing moves
+        self.assertEqual(dlg.chosen, ['C', 'A', 'D'])
+        dlg._move('C', -1)   # already first: nothing moves
         dlg._move('R', 1)    # the game being built does not move
         self._settle()
-        self.assertEqual([r.title_id for r in dlg.rows], ['D', 'C', 'A', 'B', 'R'])
+        self.assertEqual([r.title_id for r in dlg.rows], ['C', 'A', 'B', 'D', 'R'])
         dlg._toggle('B', True)
         self._settle()
-        self.assertEqual(dlg.chosen, ['D', 'C', 'A', 'B'])
+        self.assertEqual(dlg.chosen, ['C', 'A', 'B', 'D'])
         self.assertEqual(dlg.start_btn.text(), self.m.t('queue.add', 4))
 
 
