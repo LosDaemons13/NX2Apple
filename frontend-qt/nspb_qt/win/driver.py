@@ -965,10 +965,21 @@ def patch(mod: ModuleType, repo: Path, *, j: int | None = None) -> None:
                     mod.rmtree(Path(cmd[4]).parent)
                 m = re.search(r'^\[RED\] (.+)$', text, re.M)
                 detail = f'{m.group(1)}\n' if m else ''
+                if 'Oodle- or LZ5-compressed game files: set DM_OODLE_HOST' in text:
+                    raise BuildError(
+                        f'{detail}this game\'s shader archives use Oodle or LZ5 compression, which '
+                        'must be decoded by booting the game\'s own arm64 code in a Mac host '
+                        f'(each file in {log})')
+                # The red line ends with "---- host output ----" and the decoder's own words follow on the next
+                # lines: the first line alone said nothing of why (Scarlet, Violet and Legends: Z-A showed an empty
+                # host output when the emulator had said "emulated heap full (96 MB)")
+                said = list(dict.fromkeys(
+                    ln.strip() for ln in re.findall(r'^\[dm\] \[RED\] (.+)$', text, re.M)))[:4]
+                host = ''.join(f'[RED] {ln}\n' for ln in said)
                 raise BuildError(
-                    f'{detail}this game\'s shader archives use Oodle or LZ5 compression, which '
-                    'must be decoded by booting the game\'s own arm64 code in a Mac host '
-                    f'(each file in {log})')
+                    f'{detail}{host}the game\'s own Oodle or LZ5 decoder, run in the Windows '
+                    'emulator (nspb_qt/win/oodle_emu.py), could not decode this game\'s shader '
+                    f'archives (each file in {log})')
         return res
 
     mod.run = run_ipa

@@ -5405,6 +5405,67 @@ class OodleEmuWinTest(unittest.TestCase):
         self.assertEqual(dec.run(b'abcd', 4), b'\x01' * 4)
         self.assertEqual(order, ['flush', 'reset', 'call'] * 2)
 
+    def test_the_heap_grows_for_a_trinity_pack_stream(self) -> None:
+        """Pokémon Scarlet, Violet and Legends: Z-A each have an Oodle stream of 21-25 MB that decodes to 71-73 MB: with the
+        decoder's 40 MB of buffers it never fit the fixed 96 MB heap ("emulated heap full (96 MB)", the shader split
+        failed every time). The heap now grows, for Python's allocations and for the in-VM allocator alike"""
+        import struct
+        E = self.arm64_emu
+        self.assertTrue(E._HAS_UNICORN and E.Uc is not None, 'Unicorn must be installed in CI and local test runs')
+        m = E.Machine([])
+        for n in (16 << 20, 8 << 20, 16 << 20, 16):   # oodle_emu.Decoder._alloc_buffers
+            m.malloc(n)
+        mark = m.heap_mark()
+        comp_at = m.malloc(25265873)
+        out_at = m.malloc(72893492 + 0x10000)
+        m.write(out_at + 72893492 - 4, b'tail')
+        self.assertEqual(m.read(out_at + 72893492 - 4, 4), b'tail')
+        self.assertLess(comp_at, out_at)
+        self.assertGreater(m.heap_size, 96 << 20)
+        m.heap_reset(mark)
+        big = m.call_fast(E.FAST_STUB_ADDRS['malloc'], 200 << 20)   # past the limit: the in-VM stub's slow trap grows it
+        self.assertLessEqual(big + (200 << 20), m.heap_limit)
+        self.assertEqual(struct.unpack('<Q', m.read(E.HEAP_CTL_ADDR + 8, 8))[0], m.heap_limit,
+                         'the in-VM allocator reads the new limit')
+        m.heap_reset(mark)
+        self.assertEqual(m.call_fast(E.FAST_STUB_ADDRS['malloc'], 1 << 20), big, 'a reset reuses the grown heap')
+        with self.assertRaises(E.EmuError) as ctx:
+            m.malloc(E.HEAP_MAX + 1)
+        self.assertIn('emulated heap full', str(ctx.exception))
+
+    def test_a_failed_decoder_shows_its_own_words(self) -> None:
+        """The split's red line ends with "---- host output ----" and the decoder's words follow on the next lines: the
+        build stopped on the first line alone, with an empty host output and the advice to use a Mac"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / 'shader_split.log'
+            script = root / 'fake_split.py'
+            script.write_text(
+                'print("[RED] arc/data.trpfs: the game\'s decoder in the Mac host failed on a 25265873 -> 72893492 '
+                'byte stream; ---- host output ----\\n[dm] DM_OODLE_SERVE: OodleLZ_Decompress (emulated ARM64), requests '
+                'on stdin\\n\\n[dm] [RED] DM_OODLE_SERVE: request 5: emulated heap full (96 MB)\\n\\n'
+                '[dm] [RED] DM_OODLE_SERVE: request 5 (25265873 -> 72893492 bytes) failed\\n (its shaders are left out)", '
+                'flush=True)\n'
+                'print("[RED] 1 file(s) could not be read, their shaders are left out", flush=True)\n'
+                'print("shaders: 12 (vertex 6, pixel 6)", flush=True)\n',
+                encoding='utf-8')
+            orig_up = self.driver._UPSTREAM_RUN
+
+            def fake_upstream_run(cmd, log_path, *a, **kw):
+                return orig_up([sys.executable, str(script), *cmd[2:]], log_path, *a, **kw)
+
+            self.driver._UPSTREAM_RUN = fake_upstream_run
+            try:
+                with self.assertRaises(self.mod.BuildError) as ctx:
+                    self.mod.run([sys.executable, str(self.repo / 'dm/gfx/tools/shader_split.py'), 'romfs', 'main',
+                                  str(root / 'pkg'), str(root / 'tables/shader_map.tsv')], log)
+            finally:
+                self.driver._UPSTREAM_RUN = orig_up
+            text = str(ctx.exception)
+            self.assertIn('[RED] DM_OODLE_SERVE: request 5: emulated heap full (96 MB)', text)
+            self.assertIn('Windows emulator', text)
+            self.assertNotIn('in a Mac host (each file', text)
+
     def test_find_native_oodle_dll_accepts_only_explicit_locations(self) -> None:
         OE = self.oodle_emu
         with tempfile.TemporaryDirectory() as td, \

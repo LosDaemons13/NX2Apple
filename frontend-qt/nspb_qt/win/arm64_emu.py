@@ -40,6 +40,11 @@ TRAP_BASE = 0xFFFE_0000     # one 4-byte slot (a ret) per Python-trapped import
 FAST_BASE = 0xFFFD_0000     # unhooked native ARM64 machine-code stubs for hot libc / allocator calls
 STACK_TOP, STACK_SIZE = 0x7F00_0000_0000, 32 << 20
 HEAP_BASE = 0x6000_0000_0000
+# The heap starts at the size a Machine asks for and grows on demand up to HEAP_MAX, in HEAP_GROW steps: a Trinity pack in
+# Pokémon Scarlet, Violet and Legends: Z-A is one Oodle stream of 21-25 MB that decodes to 71-73 MB, which with the
+# decoder's own 40 MB of buffers never fit the 96 MB the heap had (each of those builds failed in the shader split)
+HEAP_MAX = 1 << 30
+HEAP_GROW = 16 << 20
 TLS_BASE = 0x5F00_0000_0000
 HEAP_CTL_ADDR = TLS_BASE + 0xF000   # [heap_top: u64, heap_limit: u64, slow_malloc: u64, slow_calloc: u64]
 ERRNO_ADDR = TLS_BASE + 0xF020      # int32 errno storage
@@ -783,13 +788,25 @@ class Machine:
         self.heap_top = val
         self.uc.mem_write(HEAP_CTL_ADDR, struct.pack('<Q', val))
 
+    def _grow_heap(self, need_top: int) -> bool:
+        """Map more heap right after the current end so that `need_top` fits (False past HEAP_MAX). The in-VM allocator
+        reads the limit from HEAP_CTL_ADDR on each call, so it sees the new end at once; heap_reset keeps the mapping."""
+        new_limit = HEAP_BASE + up(need_top - HEAP_BASE, HEAP_GROW)
+        if new_limit - HEAP_BASE > max(HEAP_MAX, self.heap_size):
+            return False
+        self.uc.mem_map(self.heap_limit, new_limit - self.heap_limit, UC_PROT_ALL)
+        self.heap_limit = new_limit
+        self.heap_size = new_limit - HEAP_BASE
+        self.uc.mem_write(HEAP_CTL_ADDR + 8, struct.pack('<Q', new_limit))
+        return True
+
     def malloc(self, n: int, align: int = 16) -> int:
         cur = max(self.heap_top, self._vm_heap_top())
         sz = up(max(n, 1), 16)
         a = up(cur + 16, max(align, 16))
         new_top = a + sz
-        if new_top > self.heap_limit:
-            raise EmuError(f'emulated heap full ({self.heap_size >> 20} MB)')
+        if new_top > self.heap_limit and not self._grow_heap(new_top):
+            raise EmuError(f'emulated heap full ({self.heap_size >> 20} MB, {n} bytes asked)')
         self.uc.mem_write(a - 16, struct.pack('<Q', sz))
         self._set_vm_heap_top(new_top)
         self.blocks[a] = n
