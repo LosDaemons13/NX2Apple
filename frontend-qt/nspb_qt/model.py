@@ -24,6 +24,7 @@ from . import engine
 from . import input_staging
 from . import inputs
 from . import library as lib
+from . import log_lines
 from . import platform_util as pu
 from . import romfs_languages
 from .i18n import Lang
@@ -273,6 +274,7 @@ class Model(QObject):
         self._last_build_inputs: tuple[str, ...] = ()
         self.override = bf.OverrideState()      # "Build anyway": one confirmed --allow-* for the next build
         self._last_error = ''   # the last real log line: the failure note names it (issue #52)
+        self.failure_lines: list[str] = []   # the error lines of the last build that failed (log_lines.failure_lines): the queue shows them
         self.game_dir = ''
         self.base_path = ''
         self.update_path = ''
@@ -2717,6 +2719,7 @@ class Model(QObject):
             self.stages = []
         self.log_tail = ''
         self._last_error = ''
+        self.failure_lines = []
         self.failure = None
         self.override.cancel()
         self.stagesChanged.emit()
@@ -2792,6 +2795,7 @@ class Model(QObject):
                 # on its own sent a reporter looking for a log that was not on screen (#52)
                 last = getattr(self, '_last_error', '')
                 note = self.t('msg.buildFailedReason', last) if last else self.t('msg.buildFailed')
+                self.failure_lines = log_lines.failure_lines(self.log_tail)
                 known = bf.classify(self.log_tail, keys_readable=self._keys_readable())
                 if known.kind != bf.UNKNOWN:   # a known early stop: the window explains it and offers the next step
                     self.failure = known
@@ -2807,11 +2811,14 @@ class Model(QObject):
                     self.stages[-1].state = 'failed'
                     self.stagesChanged.emit()
                 ok, note = False, self.t('msg.buildFailedReason', str(e))
+                self.failure_lines = log_lines.failure_lines(self.log_tail) or [str(e)[:300]]
             finally:
                 self.running = False
                 self.runningChanged.emit(False)
             if ok:
                 self._learn_build_rate()
+            elif not self.failure_lines and note:   # the IPA export after a build that went through: its note says why
+                self.failure_lines = [note[:300]]
             self.finished.emit(ok, note)
 
         self._thread = threading.Thread(target=work, daemon=True)

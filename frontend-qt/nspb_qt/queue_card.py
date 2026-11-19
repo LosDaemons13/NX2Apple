@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from . import style
@@ -26,11 +26,12 @@ OUTCOME_STATUS = {'ok': 'done', 'failed': 'failed', 'skipped': 'skipped'}
 
 class BuildQueueCard(CardGroup):
     def __init__(self, model: 'Model', *, on_select: Callable[[], None], on_change: Callable[[], None],
-                 parent: QWidget | None = None) -> None:
+                 on_show_log: Callable[[str], None] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self.m = model
         self.on_select = on_select
         self.on_change = on_change
+        self.on_show_log = on_show_log   # a failed game's "Show in the log": the log at its error
         self._shown: tuple | None = None
         self.hide()
 
@@ -112,7 +113,22 @@ class BuildQueueCard(CardGroup):
         else:
             st.setObjectName('muted')
         col.addWidget(st)
+        why = self.m.queue.detail(title_id) if status == 'failed' else []
+        if why:   # the lines that say why, so the reason is here and not thousands of lines up in the log
+            err = QLabel('\n'.join(why))
+            err.setObjectName('mono')
+            err.setWordWrap(True)
+            err.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            err.setStyleSheet(f'color: {style.RED}; font-size: 11.5px;')
+            col.addWidget(err)
         rl.addLayout(col, 1)
+        if status == 'failed' and self.on_show_log is not None:
+            show = QPushButton(t('queue.showInLog'))
+            show.setObjectName('ghost')
+            show.setToolTip(t('queue.showInLogHelp'))
+            show.setAccessibleName(t('queue.showInLogNamed', name))
+            show.clicked.connect(lambda _=False, tid=title_id: self.on_show_log(tid))
+            rl.addWidget(show, 0, Qt.AlignmentFlag.AlignTop)
         if status == 'queued':
             for text_, step, tip, named in (('▲', -1, 'queue.moveUp', 'queue.moveUpNamed'), ('▼', 1, 'queue.moveDown', 'queue.moveDownNamed')):
                 b = QPushButton(text_)

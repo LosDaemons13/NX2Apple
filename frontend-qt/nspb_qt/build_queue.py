@@ -16,6 +16,7 @@ class BuildQueue:
     waiting: list[str] = field(default_factory=list)            # title IDs, in build order
     current: str | None = None                                   # the queued game being built
     results: list[tuple[str, str]] = field(default_factory=list)  # (title ID, 'ok' | 'failed' | 'skipped')
+    details: dict[str, list[str]] = field(default_factory=dict)  # title ID (upper case) -> why it failed, for the queue's rows
 
     @property
     def active(self) -> bool:
@@ -26,6 +27,7 @@ class BuildQueue:
         self.waiting = []
         self.current = None
         self.results = []
+        self.details = {}
         self.extend(ids)
 
     def extend(self, ids: Iterable[str]) -> None:
@@ -68,10 +70,20 @@ class BuildQueue:
         self.current = self.waiting.pop(0) if self.waiting else None
         return self.current
 
-    def finish_current(self, outcome: str) -> None:
+    def finish_current(self, outcome: str, detail: Iterable[str] = ()) -> None:
+        """Record how the current build ended; `detail`: the lines that say why it failed (log_lines.failure_lines)."""
         if self.current is not None:
             self.results.append((self.current, outcome))
+            lines = [ln for ln in detail if ln]
+            if lines:
+                self.details[self.current.upper()] = lines
+            else:
+                self.details.pop(self.current.upper(), None)
             self.current = None
+
+    def detail(self, title_id: str) -> list[str]:
+        """Why a game of this queue failed (empty when it did not, or nothing said why)."""
+        return list(self.details.get(title_id.upper(), ()))
 
     def counts(self) -> dict[str, int]:
         out = {'ok': 0, 'failed': 0, 'skipped': 0}

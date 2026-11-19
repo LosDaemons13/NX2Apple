@@ -160,6 +160,46 @@ class QueueInTheWindowTests(unittest.TestCase):
         self.assertEqual(q.counts(), {'ok': 2, 'failed': 1, 'skipped': 0})
         self.assertEqual(self.w.footer.text(), self.m.t('queue.done', 2, 1))
 
+    def test_a_failed_game_shows_why_under_failed_and_its_place_in_the_log(self):
+        """The night's log is thousands of lines: the queue shows a failed game's error lines under its "Failed" and opens the
+        log at that build's first error, not at the same error of another game"""
+        from PySide6.QtWidgets import QLabel, QPushButton
+        self._wire()
+        q = self.m.queue
+        q.set(['0100000000010000', '0400486024DEC000', '0400A3A01EE4C000'])
+        self.w._queue_start_next()
+        for line in ('[11:50:26] ✗ [6/9] shader split (9:49)', '[RED] arc/data.trpfs: the decoder failed',
+                     '[RED] DM_OODLE_SERVE: request 9895: emulated heap full (96 MB)'):
+            self.m.log(line + '\n')
+        self.m.failure_lines = ['✗ [6/9] shader split (9:49)', 'DM_OODLE_SERVE: request 9895: emulated heap full (96 MB)']
+        self._finish(ok=False)
+        self.m.failure_lines = []
+        self._finish(ok=True)
+        for line in ('[14:11:31] ✗ [5/8] shader split (4:49)', '[RED] arc/data.trpfs: the decoder failed'):
+            self.m.log(line + '\n')
+        self.m.failure_lines = ['✗ [5/8] shader split (4:49)']
+        self._finish(ok=False)
+        self.assertEqual(q.detail('0100000000010000'), ['✗ [6/9] shader split (9:49)', 'DM_OODLE_SERVE: request 9895: emulated heap full (96 MB)'])
+        self.assertEqual(q.detail('0400486024DEC000'), [], 'a build that went through says nothing')
+        from PySide6.QtCore import QEvent
+        self.app.sendPostedEvents(None, QEvent.DeferredDelete)   # the rows of the renders before
+        texts =[lb.text() for lb in self.w.queue_card.findChildren(QLabel)]
+        self.assertIn('✗ [6/9] shader split (9:49)\nDM_OODLE_SERVE: request 9895: emulated heap full (96 MB)', texts)
+        buttons = [b for b in self.w.queue_card.findChildren(QPushButton) if b.text() == self.m.t('queue.showInLog')]
+        self.assertEqual(len(buttons), 2, 'one per failed game')
+        self.w._show_queue_failure('0400A3A01EE4C000')
+        self.app.processEvents()
+        view = self.w._log_window.view
+        self.assertEqual(view.textCursor().selectedText(), '[14:11:31] ✗ [5/8] shader split (4:49)')
+        self.w._show_queue_failure('0100000000010000')
+        self.app.processEvents()
+        self.assertEqual(view.textCursor().selectedText(), '[11:50:26] ✗ [6/9] shader split (9:49)', 'its own error, not the last one')
+        self.m.log('[15:00:00] a line while the window is open\n')
+        self.assertEqual(view.toPlainText(), self.w.log.toPlainText(), 'the open window gets the new lines too')
+        self.w._log_window.close()
+        q.set(['0100000000010000'])
+        self.assertEqual(q.detail('0100000000010000'), [], 'a new queue forgets the last one')
+
     def test_a_build_that_does_not_start_is_counted_failed_and_the_next_one_starts(self):
         self._wire()
         self.fail_to_start = {'0100000000010000'}

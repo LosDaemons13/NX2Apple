@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import threading
 from pathlib import Path
@@ -23,7 +22,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -45,6 +43,7 @@ from . import style
 from .app_update import APP_VERSION, display_tag
 from .build_notes import TEXT, TITLE, stale_reason
 from .i18n import Lang
+from .log_view import LogView, LogWindow
 from .model import Dep, DepState, Model
 from .sheets import CheatsDialog, DefenderPromptDialog, DeleteGameDialog, FreeSpaceDialog, OnboardingDialog
 from .widgets import (
@@ -941,7 +940,8 @@ class MainWindow(QMainWindow):
 
         # Build queue: what was built, what is being built, what waits (queue_card.py, BuildQueueCard.swift on the Mac)
         from .queue_card import BuildQueueCard
-        self.queue_card = BuildQueueCard(self.m, on_select=self._open_build_queue, on_change=self._refresh_activity_bar)
+        self.queue_card = BuildQueueCard(self.m, on_select=self._open_build_queue, on_change=self._refresh_activity_bar,
+                                         on_show_log=self._show_queue_failure)
         self.body_col.addWidget(self.queue_card)
 
         # Card 5: Progress Card
@@ -1742,6 +1742,11 @@ class MainWindow(QMainWindow):
         self.log_label.setObjectName('rowTitle')
         hl.addWidget(self.log_label)
         hl.addStretch(1)
+        self.expand_log_btn = QPushButton(self.m.t('log.expand'))
+        self.expand_log_btn.setObjectName('ghost')
+        self.expand_log_btn.setToolTip(self.m.t('log.expandHelp'))
+        self.expand_log_btn.clicked.connect(lambda: self._open_log_window())
+        hl.addWidget(self.expand_log_btn)
         self.export_log_btn = QPushButton(self.m.t('log.export'))
         self.export_log_btn.setObjectName('ghost')
         self.export_log_btn.clicked.connect(self._export_log)
@@ -1751,13 +1756,26 @@ class MainWindow(QMainWindow):
         log_wrap = QWidget()
         lw = QVBoxLayout(log_wrap)
         lw.setContentsMargins(14, 4, 14, 14)
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
+        self.log = LogView()
         self.log.setPlaceholderText(self.m.t('log.placeholder'))
         self.log.setMinimumHeight(200)
         lw.addWidget(self.log)
         grp.add_row(log_wrap)
+        self._log_window: LogWindow | None = None
+        self._queue_log_start: dict[str, int] = {}    # title ID -> the log line where its queued build started
+        self._queue_error_block: dict[str, int | None] = {}   # title ID -> the log line of its build's first error
         return grp
+
+    def _open_log_window(self, block: int | None = None) -> None:
+        """The build log in a window of its own, at its end or at line `block` of the log."""
+        if self._log_window is None:
+            self._log_window = LogWindow(self.m.t, self.log, parent=self)
+        self._log_window.show_log(block)
+
+    def _log_views(self) -> list[LogView]:
+        """Where a log line goes: the build page's log, and the larger window while it is open."""
+        win = getattr(self, '_log_window', None)
+        return [self.log] + ([win.view] if win is not None and win.isVisible() else [])
 
     def _export_log(self) -> None:
         f, _ = QFileDialog.getSaveFileName(self, self.m.t('log.export'), 'nx2apple-build.log', 'Log files (*.log *.txt)')
@@ -2384,6 +2402,10 @@ class MainWindow(QMainWindow):
         self.log_group.set_title(t('build.log'))
         self.log_label.setText(t('build.log'))
         self.export_log_btn.setText(t('log.export'))
+        self.expand_log_btn.setText(t('log.expand'))
+        self.expand_log_btn.setToolTip(t('log.expandHelp'))
+        if self._log_window is not None:
+            self._log_window.retranslate()
         self.log.setPlaceholderText(t('log.placeholder'))
 
         # Settings page texts
@@ -2899,31 +2921,14 @@ class MainWindow(QMainWindow):
         self._refresh_activity_bar()
 
     def _replace_beat(self, s: str) -> None:
-        """A progress line, each second: it takes the place of the stage's previous one when nothing came in between."""
-        doc = self.log.document()
-        c = self.log.textCursor()
-        stage = re.match(r'^(?:\[\d\d:\d\d:\d\d\]\s*)?(\[\d+/\d+\])', s)
-        stage_key = stage.group(1) if stage else ''
-        last = getattr(self, '_beat_mark', None)   # (stage, characters in the log right after that beat)
-        if last is not None and last[0] == stage_key and last[1] == doc.characterCount():
-            c.movePosition(c.MoveOperation.End)
-            c.movePosition(c.MoveOperation.PreviousBlock)
-            c.movePosition(c.MoveOperation.StartOfBlock)
-            c.movePosition(c.MoveOperation.End, c.MoveMode.KeepAnchor)
-            c.insertText(s)
-        else:
-            c.movePosition(c.MoveOperation.End)
-            c.insertText(s)
-        self._beat_mark = (stage_key, doc.characterCount())
-        self.log.setTextCursor(c)
-        self.log.ensureCursorVisible()
+        """A progress line, each second: it takes the place of the stage's previous one when nothing came in between.
+        The log follows it only when the reader is at the end (LogView)."""
+        for view in self._log_views():
+            view.replace_beat(s)
 
     def _append_log(self, s: str) -> None:
-        c = self.log.textCursor()
-        c.movePosition(c.MoveOperation.End)
-        c.insertText(s)
-        self.log.setTextCursor(c)
-        self.log.ensureCursorVisible()
+        for view in self._log_views():
+            view.append_text(s)
         reason = stale_reason(s)
         if reason and not getattr(self, '_stale_shaders_shown', False):
             self._stale_shaders_shown = True
@@ -3276,9 +3281,10 @@ class MainWindow(QMainWindow):
                 line = f"{game.name} · {t('fail.keys.what')} {t('fail.keys.next')}"
                 self.m.log(line + '\n')
                 self.footer.setText(line)
-                q.finish_current('failed')
+                q.finish_current('failed', [f"{t('fail.keys.what')} {t('fail.keys.next')}"])
                 continue
             line = t('queue.starting', game.name, number, total)
+            self._queue_log_start[tid.upper()] = self.log.document().blockCount() - 1   # where this game's build starts in the log
             self.m.log(line + '\n')
             self.footer.setText(line)
             self._refresh_library()
@@ -3294,9 +3300,17 @@ class MainWindow(QMainWindow):
         q = self.m.queue
         if q.current is None:
             return False
-        q.finish_current('ok' if ok else 'failed')
+        if not ok:   # the error the queue's "Show in the log" goes to: the first of this build's
+            start = self._queue_log_start.get(q.current.upper())
+            at = self.log.first_error_block(start) if start is not None else None
+            self._queue_error_block[q.current.upper()] = at if at is not None else self.log.last_error_block()
+        q.finish_current('ok' if ok else 'failed', () if ok else self.m.failure_lines)
         QTimer.singleShot(0, self._queue_start_next)
         return True
+
+    def _show_queue_failure(self, title_id: str) -> None:
+        """A failed game of the queue: the log in its larger window, at that build's first error line."""
+        self._open_log_window(self._queue_error_block.get(title_id.upper()))
 
     def _queue_finished(self) -> None:
         c = self.m.queue.counts()
