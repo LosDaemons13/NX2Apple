@@ -45,7 +45,7 @@ from .build_notes import TEXT, TITLE, stale_reason
 from .i18n import Lang
 from .log_view import LogView, LogWindow
 from .model import Dep, DepState, Model
-from .sheets import CheatsDialog, DefenderPromptDialog, DeleteGameDialog, FreeSpaceDialog, OnboardingDialog
+from .sheets import CheatsDialog, DefenderPromptDialog, DeleteGameDialog, FreeSpaceDialog, ModsDialog, OnboardingDialog
 from .title_order import alphabetical
 from .widgets import (
     CardGroup,
@@ -794,6 +794,9 @@ class MainWindow(QMainWindow):
 
         act_cheats = menu.addAction(self.m.t('cheats.menu'))
         act_cheats.triggered.connect(lambda: CheatsDialog(self.m, g, self).exec())
+
+        act_mods = menu.addAction(self.m.t('mods.menu'))
+        act_mods.triggered.connect(lambda: ModsDialog(self.m, g, self).exec())
 
         act_art = menu.addAction(self.m.t('library.changeArtwork'))
         act_art.triggered.connect(lambda: self._pick_custom_artwork(g))

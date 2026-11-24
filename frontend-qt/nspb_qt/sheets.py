@@ -1,8 +1,9 @@
-"""Modal dialogs (FreeSpace, DeleteGame, Cheats, Onboarding) mirroring the Mac SwiftUI sheets."""
+"""Modal dialogs (FreeSpace, DeleteGame, Cheats, Mods, Onboarding) mirroring the Mac SwiftUI sheets."""
 from __future__ import annotations
 
 import os
 import shutil
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import features as feat
+from . import game_mods as gm
 from . import library as lib
 from . import platform_util as pu
 from . import style
@@ -491,6 +493,249 @@ class CheatsDialog(QDialog):
     def _open_folder(self) -> None:
         os.makedirs(self.folder, exist_ok=True)
         pu.reveal(self.folder)
+
+
+class ModsDialog(QDialog):
+    """A game's mods (game_mods.py): one switch each, import from a zip or a folder, the folder in Explorer.
+
+    RomFS mods go to the iPhone with the game data, code mods (.pchtxt, .ips) go into the next build, exlaunch mods cannot be used."""
+
+    def __init__(self, model: 'Model', game: lib.LibraryGame, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.m = model
+        self.game = game
+        self.setWindowTitle(f"{self.m.t('mods.title')} — {game.name}")
+        self.setMinimumSize(640, 540)
+        self.setStyleSheet(style.STYLESHEET)
+        self.folder = gm.folder_of(game)
+        # the last build: its main's build ID and the code mods the engine wrote into it (main.mods.tsv in the app)
+        self.built = gm.last_build(game.work_dir, game.ipa_path if game.has_ipa else None, game.title_id,
+                                   str(Path(self.m.shell_cache_path, 'frameworks')))
+        self.build_id = self.built.build_id
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(14)
+
+        title = QLabel(f"{self.m.t('mods.title')} · {game.name}")
+        title.setStyleSheet('font-size: 20px; font-weight: 800;')
+        lay.addWidget(title)
+        head = QHBoxLayout()
+        zip_btn = QPushButton(self.m.t('mods.importZip'))
+        zip_btn.clicked.connect(self._import_zip)
+        head.addWidget(zip_btn)
+        dir_btn = QPushButton(self.m.t('mods.importFolder'))
+        dir_btn.clicked.connect(self._import_folder)
+        head.addWidget(dir_btn)
+        open_btn = QPushButton(self.m.t('cheats.showFolder'))
+        open_btn.clicked.connect(self._open_folder)
+        open_btn.setEnabled(self.folder is not None)
+        head.addWidget(open_btn)
+        head.addStretch(1)
+        lay.addLayout(head)
+
+        note = QLabel(self.m.t('mods.note'))
+        note.setObjectName('muted')
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        top = CardGroup()
+        brow = QWidget()
+        brl = QHBoxLayout(brow)
+        brl.setContentsMargins(18, 12, 18, 12)
+        bt = QLabel(self.m.t('mods.buildLabel'))
+        bt.setObjectName('rowTitle')
+        brl.addWidget(bt, 1)
+        bval = QLabel(self.build_id or self.m.t('cheats.buildUnknown'))
+        bval.setObjectName('mono')
+        brl.addWidget(bval)
+        top.add_row(brow)
+        if self.build_id:
+            top.add_divider()
+            arow = QWidget()
+            arl = QHBoxLayout(arow)
+            arl.setContentsMargins(18, 12, 18, 12)
+            at = QLabel(self.m.t('mods.lastBuild'))
+            at.setObjectName('rowTitle')
+            arl.addWidget(at, 1)
+            aval = QLabel(', '.join(f'{n} ({c})' for n, c in self.built.mods.items()) or self.m.t('mods.lastBuildNone'))
+            aval.setWordWrap(True)
+            arl.addWidget(aval, 2)
+            top.add_row(arow)
+        lay.addWidget(top)
+
+        self.status_lbl = QLabel('')
+        self.status_lbl.setObjectName('muted')
+        self.status_lbl.setWordWrap(True)
+        lay.addWidget(self.status_lbl)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # long mod names wrap instead
+        self.list_host = QWidget()
+        self.list_layout = QVBoxLayout(self.list_host)
+        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setSpacing(12)
+        self.scroll.setWidget(self.list_host)
+        lay.addWidget(self.scroll, 1)
+
+        foot = QHBoxLayout()
+        foot.addStretch(1)
+        done_btn = QPushButton(self.m.t('free.done'))
+        done_btn.setObjectName('creamPill')
+        done_btn.clicked.connect(self.accept)
+        foot.addWidget(done_btn)
+        lay.addLayout(foot)
+
+        self._reload()
+
+    def _subtitle(self, mod: gm.Mod) -> tuple[str, bool]:
+        """What the mod does here, and whether that is a warning (red)."""
+        kind = mod.kind
+        if kind == 'unsupported':
+            return self.m.t('mods.exlaunch', ', '.join(mod.replaced)), True
+        if kind == 'empty':
+            return self.m.t('mods.empty'), True
+        parts, warn = [], False
+        if mod.code_files:
+            fits = mod.fits(self.build_id)
+            if fits is False:
+                parts.append(self.m.t('mods.codeOther', ', '.join(sorted(mod.code_ids))))
+                warn = True
+            else:
+                parts.append(self.m.t('mods.code'))
+                built = self.built.mods.get(mod.name)
+                if mod.enabled and built:
+                    parts.append(self.m.t('mods.applied', built))
+                elif mod.enabled and self.build_id:
+                    parts.append(self.m.t('mods.notYet'))
+                    warn = True
+                elif built:
+                    parts.append(self.m.t('mods.stillIn'))
+                    warn = True
+        if mod.romfs:
+            parts.append(self.m.t('mods.romfs'))
+        if mod.replaced:
+            parts.append(self.m.t('mods.exlaunchPart', ', '.join(mod.replaced)))
+            warn = warn or not mod.code_files
+        return ' '.join(parts), warn
+
+    def _reload(self) -> None:
+        while self.list_layout.count():
+            it = self.list_layout.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        mods = gm.list_mods(self.folder, self.game.title_id)
+        if not mods:
+            empty = CardGroup()
+            r = QWidget()
+            rl = QHBoxLayout(r)
+            rl.setContentsMargins(18, 18, 18, 18)
+            lbl = QLabel(self.m.t('mods.none'))
+            lbl.setObjectName('muted')
+            lbl.setWordWrap(True)
+            rl.addWidget(lbl)
+            empty.add_row(r)
+            self.list_layout.addWidget(empty)
+            self.list_layout.addStretch(1)
+            return
+        grp = CardGroup()
+        for idx, mod in enumerate(mods):
+            if idx:
+                grp.add_divider()
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(18, 10, 18, 10)
+            col = QVBoxLayout()
+            t_lbl = QLabel(mod.name)
+            t_lbl.setObjectName('rowTitle')
+            t_lbl.setWordWrap(True)
+            col.addWidget(t_lbl)
+            text, warn = self._subtitle(mod)
+            sub = QLabel(text)
+            sub.setWordWrap(True)
+            if warn:
+                sub.setStyleSheet(f'color: {style.RED}; font-size: 11.5px;')
+            else:
+                sub.setObjectName('muted')
+            col.addWidget(sub)
+            rl.addLayout(col, 1)
+            rm = QPushButton(self.m.t('mods.remove'))
+            rm.clicked.connect(lambda _=False, md=mod: self._remove(md))
+            rl.addWidget(rm)
+            sw = LauncherSwitch(mod.enabled)
+            sw.setEnabled(mod.kind not in ('unsupported', 'empty'))
+            sw.toggled.connect(lambda checked, md=mod: self._toggle(md, checked))
+            rl.addWidget(sw)
+            grp.add_row(row)
+        self.list_layout.addWidget(grp)
+        self.list_layout.addStretch(1)
+
+    def _toggle(self, mod: gm.Mod, on: bool) -> None:
+        try:
+            mod = gm.set_enabled(mod, on, self.game.title_id)
+        except OSError as e:
+            self.status_lbl.setText(self.m.t('mods.failed', str(e)))
+            self._reload()
+            return
+        msgs = []
+        if mod.code_files:
+            msgs.append(self.m.t('mods.rebuild'))
+        if mod.romfs:
+            msgs.append(self.m.t('mods.resend'))
+        if on and mod.code_files and any(o.enabled and o.code_files and o.path != mod.path
+                                         for o in gm.list_mods(self.folder, self.game.title_id)):
+            msgs.append(self.m.t('mods.several'))
+        self.status_lbl.setText(' '.join(msgs))
+        self._reload()
+
+    def _remove(self, mod: gm.Mod) -> None:
+        ans = QMessageBox.question(self, self.m.t('mods.remove'), self.m.t('mods.removeAsk', mod.name),
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+        try:
+            gm.remove(mod)
+        except OSError as e:
+            self.status_lbl.setText(self.m.t('mods.failed', str(e)))
+        self._reload()
+
+    def _imported(self, names: list[str]) -> None:
+        if not names:
+            self.status_lbl.setText(self.m.t('mods.nothingFound'))
+        elif len(names) == 1:
+            self.status_lbl.setText(self.m.t('mods.importedOne', names[0]))
+        else:
+            self.status_lbl.setText(self.m.t('mods.importedMany', len(names)))
+        self._reload()
+
+    def _import_zip(self) -> None:
+        if self.folder is None:
+            return
+        f, _ = QFileDialog.getOpenFileName(self, self.m.t('mods.importZip'), '', 'Mods (*.zip *.pchtxt *.ips)')
+        if not f:
+            return
+        try:
+            self._imported(gm.import_path(f, self.folder, self.game.title_id))
+        except (OSError, zipfile.BadZipFile) as e:
+            self.status_lbl.setText(self.m.t('mods.failed', str(e)))
+
+    def _import_folder(self) -> None:
+        if self.folder is None:
+            return
+        d = QFileDialog.getExistingDirectory(self, self.m.t('mods.importFolder'))
+        if not d:
+            return
+        try:
+            self._imported(gm.import_folder(d, self.folder, self.game.title_id))
+        except OSError as e:
+            self.status_lbl.setText(self.m.t('mods.failed', str(e)))
+
+    def _open_folder(self) -> None:
+        if self.folder is None:
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        pu.reveal(str(self.folder))
 
 
 class OnboardingDialog(QDialog):

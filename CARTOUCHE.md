@@ -50,6 +50,26 @@ restent sur votre PC.
    contenu, les noms de dossiers n'ont pas d'importance. Autre voie : par câble avec l'app **Appareils Apple** de Windows,
    dans les fichiers de l'app, sous `games/<title ID>/`.
 
+## 4. Mods
+
+Dans la bibliothèque du lanceur : choisissez le jeu, bouton **⋯** → **Mods…**. Chaque mod est un dossier dans `games/<title ID>/mods/`
+(le dossier des données du jeu). Le nom d'un mod désactivé commence par un point.
+
+- **Format** : le zip tel qu'on le télécharge (GameBanana, etc.), avec **Importer un zip ou un fichier…**. Un zip qui contient
+  plusieurs variantes (par exemple 60 FPS, Dynamic FPS, Ultrawide) arrive avec toutes les variantes désactivées : activez celle
+  que vous voulez. Un fichier `.pchtxt` ou `.ips` seul et un dossier marchent aussi. Les dispositions de yuzu et Ryujinx
+  (`<mod>/exefs/`, `<mod>/romfs/`) et d'Atmosphère (`atmosphere/contents/<title ID>/romfs`, `atmosphere/exefs_patches/<nom>/`) sont lues.
+- **Mods de code** (`.pchtxt`, `.ips` dans `exefs`) : le moteur les écrit dans le code du jeu à la **prochaine compilation**, et
+  seulement si leur identifiant de build est celui de la version compilée (la fenêtre le dit pour chaque mod).
+- **Mods de fichiers** (`romfs`) : ils partent sur l'iPhone avec les données du jeu, sans recompiler.
+- **Mods exlaunch** (`exefs/subsdk*`, `main.npdm`) : non pris en charge.
+
+**Savoir si un mod est pris en compte** : la fenêtre Mods affiche l'identifiant de build du jeu compilé, puis pour chaque mod
+« Patchs de code pour ce build » ou « pour une autre version », et après la compilation « Dans la dernière compilation, N patchs ».
+Le journal de compilation a aussi une ligne `main: code mods [60 FPS v4.0.0] (9 patches, 36 bytes)`. Sur l'iPhone, le compteur
+d'images (en haut à gauche) montre 60 au lieu de 30 pour un mod de fréquence d'images. Un seul mod de fréquence d'images à la fois :
+si deux mods changent le même endroit, la compilation s'arrête et les nomme.
+
 ## Limites à connaître
 
 - **Seuls les jeux qui ont un profil** dans nxnative démarrent (147 aujourd'hui, liste dans [GAMES.md](GAMES.md)).

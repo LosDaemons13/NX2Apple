@@ -959,7 +959,9 @@ def main(argv: list[str] | None = None) -> int:
 
     dmres = app / 'dm'
     dmres.mkdir()
-    for pat in ('*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv'):
+    # *.mods.tsv: the code mods the rewriter wrote (engine exefs_mods.py), which the host does not read: the launcher's Mods
+    # window reads it from the framework or the IPA to say which mods the build has
+    for pat in ('*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv', '*.mods.tsv'):
         for f in patched.glob(pat):
             shutil.copy2(f, dmres)
     if (patched / 'nro.tsv').exists():

@@ -21,6 +21,7 @@ from . import build_estimate
 from .build_queue import BuildQueue
 from . import build_failure as bf
 from . import engine
+from . import game_mods as gm
 from . import input_staging
 from . import inputs
 from . import library as lib
@@ -612,6 +613,14 @@ class Model(QObject):
         except OSError:
             return False
         return "'--work-dir'" in text or '"--work-dir"' in text
+
+    def supports_mods(self) -> bool:
+        """Whether the engine's build script takes --mods (code mods, dm/tools/exefs_mods.py): an older engine stops at argparse."""
+        try:
+            text = Path(self.engine_path, 'scripts', 'build_ipa_from_nsp.py').read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return False
+        return "'--mods'" in text
 
     def supports_shell_framework(self) -> bool:
         return (Path(self.engine_path, 'dm', 'ios', 'Shell').is_dir()
@@ -2655,6 +2664,16 @@ class Model(QObject):
             args += ['--work-dir', work_dir]
         else:
             self.log(self.t('msg.noWorkDir') + '\n')
+        # The game's code mods (game_mods.py, its data folder's mods/): the engine writes their patches before the rewrite
+        if re.fullmatch(r'[0-9A-Fa-f]{16}', tid_hex or ''):
+            lg = next((x for x in self.library.games if x.title_id.upper() == tid_hex.upper()), None)
+            mods_dir = gm.folder_of(lg) if lg is not None else Path(self.out_dir or base_dir, 'games', tid_hex.upper(), 'mods')
+            if mods_dir is not None and gm.has_code_mods(mods_dir, tid_hex):
+                if self.supports_mods():
+                    args += ['--mods', str(mods_dir)]
+                    self.log(self.t('mods.buildUses', str(mods_dir)) + '\n')
+                else:
+                    self.log(self.t('mods.buildUnsupported') + '\n')
         # A Mac app is a different output, not a different pipeline: --platform mac-app runs the
         # same steps and then packs dm/mac/pack_app.py's result. Its -o names the .app, and the
         # RomFS is inside it, so the archive step is skipped below.

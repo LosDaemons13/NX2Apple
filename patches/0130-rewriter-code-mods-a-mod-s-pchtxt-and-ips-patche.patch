@@ -1,0 +1,626 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LosDaemons13 <esteveloris@gmail.com>
+Date: Tue, 24 Nov 2026 14:44:39 +0100
+Subject: [PATCH] rewriter: code mods, a mod's .pchtxt and .ips patches written
+ before the rewrite
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Switch mods that change a game's code ship as byte patches keyed by the
+module's build ID: IPSwitch text (.pchtxt) and IPS / IPS32 files in a mod's
+exefs/ (yuzu, Ryujinx) or exefs_patches/<name>/ (Atmosphere). Horizon's loader
+applies them before the game starts. The rewriter now does the same:
+DM_EXEFS_MODS names mod folders, and patch_nso.py writes the patches each has
+for its module's build into the image before anything reads the code, so the
+sites, the function matchers and changed.tsv see the code the mod makes.
+Patches into bss are placed with bss when the image carries it. Two mods that
+write different bytes to one address, a write before or past the module and a
+mod that changes bytes a registered cut needs stop the rewrite with a red
+line. <module>.mods.tsv lists what was written.
+
+The NSP script takes --mods <folder of mods> (MODS setting): it names, per mod,
+the module it patches, a mod made for another version (its build ID is not
+one of this version's modules) and an exlaunch mod (exefs/subsdk*,
+main.npdm), which replaces modules and is not taken. The mods' patch files are
+in the rewrite's reuse key only when there are mods, so builds without them
+keep their key.
+
+Checked on Pokémon Scarlet 4.0.0 (main 421c5411…): the 9 patches of a 60 fps
+mod land on the instructions they name (add w1, w20, #1 -> mov w1, #1, the
+present interval; mov w10, #1.0 -> #60.0).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Upstream-Status: pending
+Reason: Code mods: a mod's .pchtxt and .ips patches go into the module before the rewrite, for the Windows launcher's Mods window
+Issue: none
+
+---
+ dm/tools/exefs_mods.py            | 188 ++++++++++++++++++++++++++
+ dm/tools/patch_nso.py             |  23 ++++
+ dm/tools/tests/test_exefs_mods.py | 217 ++++++++++++++++++++++++++++++
+ docs/development.md               |   5 +
+ docs/env_switches.tsv             |   1 +
+ scripts/build_ipa_from_nsp.py     |  36 ++++-
+ 6 files changed, 469 insertions(+), 1 deletion(-)
+ create mode 100644 dm/tools/exefs_mods.py
+ create mode 100644 dm/tools/tests/test_exefs_mods.py
+
+diff --git a/dm/tools/exefs_mods.py b/dm/tools/exefs_mods.py
+new file mode 100644
+index 0000000..9329b7e
+--- /dev/null
++++ b/dm/tools/exefs_mods.py
+@@ -0,0 +1,188 @@
++"""Code mods: the byte patches of a mod's exefs/ (yuzu's and Ryujinx's layout, Atmosphere's exefs_patches/), applied to a module before the rewriter reads it.
++
++A mod is a folder. Its code patches are files in `<mod>/exefs/`, `<mod>/exefs_patches/<name>/` or `<mod>/atmosphere/exefs_patches/<name>/`:
++- `.pchtxt` (IPSwitch text): `@nsobid-<build ID>` names the module, `@flag offset_shift <n>` the shift, `@enabled` / `@disabled` switch the lines after them on and off, `@stop` ends the
++  file, `@little-endian` / `@big-endian` the order of hex values (big-endian, as written, by default). A line `<hex offset> <hex bytes>` or `<hex offset> "text"` is one patch; `//` starts a comment,
++  a line that starts with `#` is a comment.
++- `.ips` (IPS: `PATCH` … `EOF`, 3-byte offsets) and IPS32 (`IPS32` … `EEOF`, 4-byte offsets), RLE records included; the file name is the build ID of the module it patches.
++Both address the module as Horizon's loader does: offset 0x100 (the NSO header's size) is the module's first byte, so a module address is offset + shift - 0x100 (a .pchtxt with
++`@flag offset_shift 0x100` gives module addresses). A build ID matches on its first 16 bytes, the part the tools key on (nso.Module.build_id), a shorter one padded with zeros.
++
++A mod that replaces modules (`exefs/main`, `exefs/subsdk*`, `exefs/main.npdm`: exlaunch and its kind) adds code the rewriter does not load; `replaced_modules` names those files and they are not applied.
++
++patch_nso.py applies the patches of the folders in DM_EXEFS_MODS (separated by os.pathsep) to the module whose build ID they name, before anything else reads its code, so the rewriter, the
++function matchers and <name>.changed.tsv see the code as the mod makes it. Two mods that write different bytes to one address stop the rewrite. Pure stdlib."""
++import os
++import re
++import sys
++from typing import NamedTuple
++
++HEADER = 0x100   # an NSO header: IPS offsets count from the file's start, which Horizon's loader maps 0x100 bytes before the module
++ID_LEN = 0x10    # the bytes of a build ID that name a module (nso.Module.build_id[:0x10])
++PATCH_EXT = ('.pchtxt', '.ips')
++MODULE_FILES = re.compile(r'(main|rtld|sdk|subsdk\d+)(\.npdm)?$', re.IGNORECASE)
++
++
++class Patch(NamedTuple):
++    address: int   # module offset
++    data: bytes
++    source: str    # the file and line (or record) it comes from
++
++
++class Error(ValueError):
++    pass
++
++
++def norm_id(text):
++    """A build ID as the tools key on it: lowercase hex of its first 16 bytes, a shorter one padded with zeros; None when text is no hex"""
++    text = text.strip().lower()
++    if not text or not re.fullmatch(r'[0-9a-f]+', text): return None
++    return (text + '0' * (2 * ID_LEN))[:2 * ID_LEN]
++
++
++def mod_folders(root):
++    """The mods of a folder of mods: its subfolders in name order, without those whose name starts with a dot (switched off)"""
++    try: names = sorted(os.listdir(root), key=str.lower)
++    except OSError: return []
++    return [os.path.join(root, n) for n in names if not n.startswith('.') and os.path.isdir(os.path.join(root, n))]
++
++
++def patch_dirs(mod):
++    """The folders of a mod that hold code patches"""
++    out = []
++    for sub in ('exefs', 'exefs_patches', os.path.join('atmosphere', 'exefs_patches')):
++        d = os.path.join(mod, sub)
++        if not os.path.isdir(d): continue
++        if sub == 'exefs': out.append(d)
++        else: out += [os.path.join(d, n) for n in sorted(os.listdir(d), key=str.lower) if os.path.isdir(os.path.join(d, n))]
++    return out
++
++
++def patch_files(mod):
++    """The .pchtxt and .ips files of a mod, in a stable order"""
++    return [os.path.join(d, n) for d in patch_dirs(mod) for n in sorted(os.listdir(d), key=str.lower)
++            if n.lower().endswith(PATCH_EXT) and os.path.isfile(os.path.join(d, n))]
++
++
++def replaced_modules(mod):
++    """Files of the mod's exefs/ that replace or add a module (exlaunch's subsdk and main.npdm): code the rewriter does not take"""
++    d = os.path.join(mod, 'exefs')
++    try: return sorted(n for n in os.listdir(d) if MODULE_FILES.match(n) and os.path.isfile(os.path.join(d, n)))
++    except OSError: return []
++
++
++def _unescape(s):
++    return s.encode('utf-8').decode('unicode_escape').encode('latin-1')
++
++
++def parse_pchtxt(text, name='patch.pchtxt'):
++    """(build ID or None, [Patch]) of an IPSwitch text; only the lines under @enabled count"""
++    bid, shift, enabled, little, out = None, 0, False, False, []
++    for n, raw in enumerate(text.splitlines(), 1):
++        line = raw.strip()
++        if not line or line.startswith('#') or line.startswith('//'): continue
++        if line.startswith('@'):
++            word = line.split()[0].lower()
++            if word.startswith('@nsobid-'):
++                bid = norm_id(word[len('@nsobid-'):])
++                if bid is None: raise Error(f'{name}:{n}: {line!r} names no build ID')
++            elif word == '@stop': break
++            elif word == '@enabled': enabled = True
++            elif word == '@disabled': enabled = False
++            elif word == '@little-endian': little = True
++            elif word == '@big-endian': little = False
++            elif word == '@flag':
++                parts = line.split()
++                if len(parts) >= 3 and parts[1].lower() == 'offset_shift':
++                    try: shift = int(parts[2], 0)
++                    except ValueError: raise Error(f'{name}:{n}: offset_shift {parts[2]!r} is no number') from None
++            continue   # any other @ line (an author's name) is not a patch
++        if not enabled: continue
++        m = re.match(r'([0-9A-Fa-f]{1,8})\s+(.*)$', line)
++        if not m: raise Error(f'{name}:{n}: {line!r} is not "<hex offset> <hex bytes>" or "<hex offset> \\"text\\""')
++        off, rest = int(m.group(1), 16), m.group(2)
++        if rest.startswith('"'):
++            end = rest.find('"', 1)
++            while end > 0 and rest[end - 1] == '\\': end = rest.find('"', end + 1)
++            if end < 0: raise Error(f'{name}:{n}: the text has no closing quote')
++            data = _unescape(rest[1:end])
++        else:
++            value = rest.split('//', 1)[0].strip()
++            if not re.fullmatch(r'(?:[0-9A-Fa-f]{2})+', value): raise Error(f'{name}:{n}: {value!r} is not whole bytes of hex')
++            data = bytes.fromhex(value)
++            if little: data = data[::-1]
++        out.append(Patch(off + shift - HEADER, data, f'{name}:{n}'))
++    return bid, out
++
++
++def parse_ips(blob, name='patch.ips'):
++    """[Patch] of an IPS or IPS32 file"""
++    if blob.startswith(b'IPS32'): pos, width, end = 5, 4, b'EEOF'
++    elif blob.startswith(b'PATCH'): pos, width, end = 5, 3, b'EOF'
++    else: raise Error(f'{name}: not an IPS file (no PATCH or IPS32 header)')
++    out = []
++    while True:
++        if blob[pos:pos + len(end)] == end and pos + len(end) >= len(blob) - 3: break   # an IPS may carry a 3-byte truncation size after EOF
++        if pos + width + 2 > len(blob): raise Error(f'{name}: cut short at {pos:#x} (no {end.decode()} record)')
++        off = int.from_bytes(blob[pos:pos + width], 'big'); size = int.from_bytes(blob[pos + width:pos + width + 2], 'big'); pos += width + 2
++        if size:
++            data = blob[pos:pos + size]; pos += size
++        else:
++            if pos + 3 > len(blob): raise Error(f'{name}: an RLE record cut short at {pos:#x}')
++            count = int.from_bytes(blob[pos:pos + 2], 'big'); data = blob[pos + 2:pos + 3] * count; pos += 3
++        if len(data) != (size or len(data)): raise Error(f'{name}: a record at {pos:#x} is cut short')
++        out.append(Patch(off - HEADER, data, f'{name}@{off:#x}'))
++    return out
++
++
++def load_file(path):
++    """(build ID or None, [Patch]) of one patch file; an .ips file's build ID is its name"""
++    base = os.path.basename(path)
++    if base.lower().endswith('.pchtxt'):
++        with open(path, encoding='utf-8', errors='replace') as f: return parse_pchtxt(f.read(), base)
++    with open(path, 'rb') as f: blob = f.read()
++    return norm_id(os.path.splitext(base)[0]), parse_ips(blob, base)
++
++
++def mod_ids(mod):
++    """{build ID: [patch files]} of a mod, files without a patch switched on left out; files that name no build ID, or cannot be read, are under None"""
++    out = {}
++    for p in patch_files(mod):
++        try: bid, patches = load_file(p)
++        except (OSError, Error): bid, patches = None, True
++        if patches: out.setdefault(bid, []).append(p)
++    return out
++
++
++def patches_for(build_id, mods):
++    """The patches of the mods (folders, in order) for the module of build_id: [(mod name, Patch)]; raises Error on a damaged file or when two mods write different bytes to one byte"""
++    want, out, owner = norm_id(build_id), [], {}
++    for mod in mods:
++        label = os.path.basename(os.path.normpath(mod))
++        for p in patch_files(mod):
++            bid, patches = load_file(p)
++            if bid != want: continue
++            for pt in patches:
++                if pt.address < 0: raise Error(f'{label}: {pt.source} writes before the module ({pt.address:#x}): the NSO header cannot be patched')
++                for i, b in enumerate(pt.data):
++                    prev = owner.get(pt.address + i)
++                    if prev and prev[0] != label and prev[1] != b:
++                        raise Error(f'mods {prev[0]!r} and {label!r} write different bytes to {pt.address + i:#x} ({prev[2]} and {pt.source}): switch one of them off')
++                    owner[pt.address + i] = (label, b, pt.source)
++                out.append((label, pt))
++    return out
++
++
++def apply(img, patches, limit):
++    """Write the patches into img (a bytearray) where they fall below limit; returns those at or past it, for the caller to place or refuse"""
++    rest = []
++    for label, pt in patches:
++        if pt.address + len(pt.data) <= limit: img[pt.address:pt.address + len(pt.data)] = pt.data
++        else: rest.append((label, pt))
++    return rest
++
++
++if __name__ == '__main__':   # exefs_mods.py <build ID> <mod>...: the patches the mods have for that module
++    try:
++        for label, pt in patches_for(sys.argv[1], sys.argv[2:]): print(f'{label}\t{pt.address:#x}\t{pt.data.hex()}\t{pt.source}')
++    except (Error, IndexError) as e: sys.exit(f'[RED] {e}')
+diff --git a/dm/tools/patch_nso.py b/dm/tools/patch_nso.py
+index ceeef78..9475dd3 100644
+--- a/dm/tools/patch_nso.py
++++ b/dm/tools/patch_nso.py
+@@ -9,6 +9,7 @@
+ #   ldxr* / ldxp → ldaxr* / ldaxp, stxr* / stxp → stlxr* / stlxp: every exclusive access gets acquire or release ordering (exclusive_order_sites; the games ran on the Switch's Cortex-A57 without it, Apple cores need it)
+ #   the completer of Trinity's per-frame rendezvous: dmb ish between its flag store and its load of the state word (trinity_completer_sites; exactly one such function in a module, or no change)
+ #   spin wait loops     → a copy whose back-edges pass a spin gate (the host yields there; a busy poll costs nothing on the Switch, see "Spin waits")
++#   Code mods (DM_EXEFS_MODS, exefs_mods.py): the .pchtxt / .ips patches a mod has for this build, written into the image before anything reads it; listed in <name>.mods.tsv
+ #   Registered cuts (CUTS of the patch files, restricted by NSO build ID, see "Registered patches"): before rewriting, the original bytes are asserted one by one and any mismatch aborts; results are listed in <name>.cuts.tsv
+ #   Function-matched cuts (MATCH_CUTS of the selected game's patches.py): unknown builds only, unique complete-function and direct-callee fingerprints, then original-byte assertions
+ #   Registered observation gates (OBS of the patch files, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
+@@ -35,6 +36,22 @@ src, outdir, NAME = sys.argv[1], sys.argv[2], sys.argv[3]
+ # against its header before anything is allocated (a damaged module stops here with a [RED] line)
+ MOD = nso.cli_read(src)
+ bss = MOD.bss
++# ---- Code mods (exefs_mods.py): the byte patches the folders of DM_EXEFS_MODS have for this module's build, written before anything reads its code, as Horizon's loader applies
++# them before the game starts, so the rewriter, the function matchers and <name>.changed.tsv see the code the mod makes. Patches past the file's segments (into bss) are placed with bss below
++import exefs_mods
++MOD_DIRS = [d for d in os.environ.get('DM_EXEFS_MODS', '').split(os.pathsep) if d]
++try: MOD_PATCHES = exefs_mods.patches_for(MOD.build_id[:0x10].hex(), MOD_DIRS) if MOD_DIRS else []
++except (exefs_mods.Error, OSError) as e: sys.exit(f'[RED] {NAME}: code mod: {e}')
++MOD_BSS = exefs_mods.apply(MOD.image, MOD_PATCHES, len(MOD.image))
++if MOD_PATCHES:
++    os.makedirs(outdir, exist_ok=True)
++    with open(os.path.join(outdir, NAME + '.mods.tsv'), 'w', encoding='utf-8') as f:
++        f.write(f'# {NAME} {MOD.build_id[:0x10].hex()}: the code mods\' patches written before the rewrite. Columns: mod, offset, bytes, source\n')
++        for label, pt in MOD_PATCHES: f.write(f'{label}\t{pt.address:#x}\t{pt.data.hex()}\t{pt.source}\n')
++    print(f'{NAME}: code mods: ' + ', '.join(f'{label} ({n} patches)' for label, n in {l: sum(1 for x, _ in MOD_PATCHES if x == l) for l, _ in MOD_PATCHES}.items()))
++else:   # an output folder used again: no list of an earlier rewrite's mods
++    try: os.remove(os.path.join(outdir, NAME + '.mods.tsv'))
++    except FileNotFoundError: pass
+ # Every jump between the patch area and the code is a B (±128 MB). A patch area appended after the image (with bss) cannot reach the code when it would start beyond 112 MB (leaving 16 MB for the patch area): Metroid Dread's main has about 1.8 GB of bss (the engine's static heap); Engage's main starts its patch area at about 103 MB and keeps it after the image.
+ # The patch area then sits FRONT bytes before the module base (PATCH_OFF is negative), and the output file holds only text + ro + data (FILE_IMAGE_LEN) followed by the patch area; the loader supplies zero pages for bss and the key page (IMAGE_SIZE is the whole image).
+ # The key page stays after bss (the patch area reaches it through ADRP, ±4 GB). Modules below the limit produce output byte-identical to before
+@@ -61,6 +78,10 @@ SPLIT = max(0x8000000 - FRONT - 0x100000, BACK_MIN) if TWO else None
+ IMG = MOD.image
+ ORIG_TEXT = bytes(IMG[:MOD.text_end])   # the text as the file has it, before any cut or site: <name>.changed.tsv compares against it
+ if not FAR: IMG.extend(bytes(bss))
++if MOD_BSS:   # a mod's variables in bss: the image carries bss only when the patch area follows it
++    if FAR or exefs_mods.apply(IMG, MOD_BSS, len(IMG)):
++        label, pt = MOD_BSS[0]
++        sys.exit(f'[RED] {NAME}: code mod {label}: {pt.source} writes {pt.address:#x}..{pt.address + len(pt.data):#x}, past the module\'s segments' + (' (bss, which this module\'s file does not hold)' if FAR else ''))
+ TEXT_END = MOD.text_end
+ RO_OFF, DATA_OFF = MOD.segments[1][0], MOD.segments[2][0]
+ if FAR:
+@@ -168,6 +189,8 @@ if (BUILD_ID in PATCHES['FRAME_STEP'] or FS_MATCH) and NAME == 'main' and not FA
+     PATCH_OFF += 0x10000
+ for off, ob, nb, why in cuts:
+     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
++    hit = next((label for label, pt in MOD_PATCHES if pt.address < off + len(ob) and off < pt.address + len(pt.data)), None) if IMG[off:off + len(ob)] != ob else None
++    if hit: sys.exit(f'[RED] {NAME}: the code mod {hit} changes bytes at {off:#x} that the rewriter\'s cut there needs ({why}): switch the mod off')
+     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'
+     IMG[off:off + len(nb)] = nb
+ # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
+diff --git a/dm/tools/tests/test_exefs_mods.py b/dm/tools/tests/test_exefs_mods.py
+new file mode 100644
+index 0000000..0ec0c76
+--- /dev/null
++++ b/dm/tools/tests/test_exefs_mods.py
+@@ -0,0 +1,217 @@
++"""Code mods (dm/tools/exefs_mods.py): .pchtxt and IPS / IPS32 patches, the build ID they name, the mod layouts, and the real rewriter writing them before it reads the code, without game files."""
++import os
++from pathlib import Path
++import struct
++import subprocess
++import sys
++import tempfile
++import unittest
++
++TOOLS = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(TOOLS))
++sys.path.insert(0, str(Path(__file__).resolve().parent))   # its sibling test module, also when the file runs alone
++import exefs_mods   # noqa: E402
++from exefs_mods import Error, Patch, parse_ips, parse_pchtxt, patches_for   # noqa: E402
++from test_nso_match import image, RET   # noqa: E402
++
++BID = '421c5411b487eb4d049dd065fec9547773e8e598'   # Pokémon Scarlet 4.0.0's main, as the 60 FPS mod names it: 20 bytes, of which the tools key on 16
++PCHTXT = f"""@nsobid-{BID.upper()}
++
++# Pokemon Scarlet [0100A3D008C5C000] v4.0.0 - 60FPS
++
++@flag print_values
++@flag offset_shift 0x100
++
++// 60FPS
++
++@enabled
++02b7a874 21008052
++00b92780 C10A94D2 // a comment after the value
++@disabled
++00000010 FFFFFFFF
++@enabled
++03c2fbb0 "ab\\x00"
++@stop
++00000020 EEEEEEEE
++
++@Fl4sh
++https://example.invalid/author
++"""
++
++
++def write(path, text):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    (path.write_bytes if isinstance(text, bytes) else path.write_text)(text)
++
++
++def ips(records, big=False):
++    out = bytearray(b'IPS32' if big else b'PATCH')
++    for off, data in records:
++        out += off.to_bytes(4 if big else 3, 'big')
++        if isinstance(data, tuple): out += b'\0\0' + data[0].to_bytes(2, 'big') + bytes([data[1]])   # RLE: (count, byte)
++        else: out += len(data).to_bytes(2, 'big') + data
++    return bytes(out + (b'EEOF' if big else b'EOF'))
++
++
++class Parse(unittest.TestCase):
++    def test_pchtxt_of_the_60_fps_mod(self):
++        bid, got = parse_pchtxt(PCHTXT, 'x.pchtxt')
++        self.assertEqual(bid, BID[:32])
++        self.assertEqual([(p.address, p.data) for p in got],
++                         [(0x2b7a874, bytes.fromhex('21008052')), (0xb92780, bytes.fromhex('c10a94d2')), (0x3c2fbb0, b'ab\0')])
++        self.assertEqual(got[0].source, 'x.pchtxt:11')
++
++    def test_pchtxt_without_shift_counts_from_the_nso_header(self):
++        _, got = parse_pchtxt('@nsobid-01\n@enabled\n00000104 00112233\n')
++        self.assertEqual(got, [Patch(4, bytes.fromhex('00112233'), 'patch.pchtxt:3')])
++
++    def test_pchtxt_little_endian_values(self):
++        _, got = parse_pchtxt('@nsobid-01\n@flag offset_shift 0x100\n@little-endian\n@enabled\n00000000 52800021\n')
++        self.assertEqual(got[0].data, bytes.fromhex('21008052'))
++
++    def test_pchtxt_damaged_lines(self):
++        for text in ('@enabled\n0100 123\n', '@enabled\nnot a patch\n', '@enabled\n0100 "open\n', '@nsobid-xyz\n'):
++            with self.subTest(text=text), self.assertRaises(Error): parse_pchtxt(text)
++
++    def test_ips_and_ips32_with_rle(self):
++        got = parse_ips(ips([(0x104, b'\x01\x02'), (0x200, (3, 0xaa))]))
++        self.assertEqual([(p.address, p.data) for p in got], [(4, b'\x01\x02'), (0x100, b'\xaa\xaa\xaa')])
++        got = parse_ips(ips([(0x1000104, b'\x09')], big=True))
++        self.assertEqual([(p.address, p.data) for p in got], [(0x1000004, b'\x09')])
++        self.assertEqual(parse_ips(ips([(0x104, b'\x01')]) + b'\0\x10\0'), [Patch(4, b'\x01', 'patch.ips@0x104')])   # a truncation size after EOF
++
++    def test_damaged_ips(self):
++        for blob in (b'NOTIPS', ips([(0x104, b'\x01\x02')])[:-4], b'PATCH\0\x01'):
++            with self.subTest(blob=blob), self.assertRaises(Error): parse_ips(blob)
++
++    def test_build_ids_pad_and_cut_to_sixteen_bytes(self):
++        self.assertEqual(exefs_mods.norm_id('ABCD'), 'abcd' + '0' * 28)
++        self.assertEqual(exefs_mods.norm_id('00' * 32), '0' * 32)
++        self.assertIsNone(exefs_mods.norm_id('nothex'))
++
++
++class Mods(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name)
++
++    def tearDown(self):
++        self.tmp.cleanup()
++
++    def test_layouts_order_and_switched_off_mods(self):
++        write(self.root / 'b/exefs/x.pchtxt', PCHTXT)
++        write(self.root / 'a/atmosphere/exefs_patches/fps/' / f'{BID[:32].upper()}.ips', ips([(0x104, b'\x01')]))
++        write(self.root / '.off/exefs/x.pchtxt', PCHTXT)
++        write(self.root / 'c/exefs_patches/other/0123.ips', ips([(0x104, b'\x02')]))
++        mods = exefs_mods.mod_folders(self.root)
++        self.assertEqual([Path(m).name for m in mods], ['a', 'b', 'c'])
++        self.assertEqual(exefs_mods.mod_ids(mods[0]), {BID[:32]: [str(self.root / 'a/atmosphere/exefs_patches/fps' / f'{BID[:32].upper()}.ips')]})
++        got = patches_for(BID[:32], mods)
++        self.assertEqual([(label, p.address) for label, p in got], [('a', 4), ('b', 0x2b7a874), ('b', 0xb92780), ('b', 0x3c2fbb0)])
++
++    def test_exlaunch_modules_are_named_not_applied(self):
++        write(self.root / 'x/exefs/subsdk3', b'NSO0')
++        write(self.root / 'x/exefs/main.npdm', b'META')
++        write(self.root / 'x/romfs/MaxFl4shBreath.ini', 'fps=60')
++        self.assertEqual(exefs_mods.replaced_modules(self.root / 'x'), ['main.npdm', 'subsdk3'])
++        self.assertEqual(exefs_mods.patch_files(self.root / 'x'), [])
++
++    def test_two_mods_writing_one_byte_differently_stop(self):
++        write(self.root / 'a/exefs/x.pchtxt', '@nsobid-01\n@flag offset_shift 0x100\n@enabled\n00000010 1111\n')
++        write(self.root / 'b/exefs/y.pchtxt', '@nsobid-01\n@flag offset_shift 0x100\n@enabled\n00000011 2222\n')
++        with self.assertRaisesRegex(Error, "'a' and 'b'.*0x11"): patches_for('01', exefs_mods.mod_folders(self.root))
++        write(self.root / 'b/exefs/y.pchtxt', '@nsobid-01\n@flag offset_shift 0x100\n@enabled\n00000011 1122\n')   # the same byte where they meet
++        self.assertEqual(len(patches_for('01', exefs_mods.mod_folders(self.root))), 2)
++
++    def test_the_header_cannot_be_patched(self):
++        write(self.root / 'a/exefs/x.pchtxt', '@nsobid-01\n@enabled\n000000f0 00\n')
++        with self.assertRaisesRegex(Error, 'before the module'): patches_for('01', [self.root / 'a'])
++
++    def test_apply_returns_what_falls_past_the_limit(self):
++        img = bytearray(8)
++        rest = exefs_mods.apply(img, [('a', Patch(2, b'\x01\x02', 's')), ('a', Patch(7, b'\x03\x04', 't'))], 8)
++        self.assertEqual(bytes(img), b'\0\0\x01\x02\0\0\0\0')
++        self.assertEqual(rest, [('a', Patch(7, b'\x03\x04', 't'))])
++
++
++class NspScript(unittest.TestCase):
++    """scripts/build_ipa_from_nsp.py's code_mods: the mods of --mods for the build's modules, and why the others are not used"""
++    def test_mods_for_this_build_others_named(self):
++        import importlib.util
++        from unittest import mock
++        spec = importlib.util.spec_from_file_location('build_ipa_from_nsp', TOOLS.parents[1] / 'scripts/build_ipa_from_nsp.py')
++        nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
++        with tempfile.TemporaryDirectory() as tmp:
++            root, exefs = Path(tmp, 'mods'), Path(tmp, 'ExeFS')
++            for m, bid in (('main', BID[:32]), ('sdk', 'bb560bdfa85b4a97786ae2c3b7995df6')):
++                write(exefs / m, b'NSO0' + bytes(0x3c) + bytes.fromhex(bid) + bytes(0x10))
++            write(root / '60 FPS/exefs/x.pchtxt', PCHTXT)
++            write(root / 'Old version/exefs/x.pchtxt', '@nsobid-0123\n@enabled\n00000104 00\n')
++            write(root / 'Exlaunch/exefs/subsdk3', b'NSO0'); write(root / 'Exlaunch/romfs/a.ini', 'x')
++            write(root / '.Switched off/exefs/x.pchtxt', PCHTXT)
++            said = []
++            with mock.patch.object(nsp, 'say', said.append):
++                picked = nsp.code_mods(root, exefs, ['main', 'sdk'])
++            self.assertEqual(picked, [str(root / '60 FPS')])
++            self.assertIn('mod 60 FPS: code patches for main', said)
++            self.assertTrue(any(s.startswith('[RED] mod Old version: its code patches are for build 0123') for s in said), said)
++            self.assertTrue(any(s.startswith('mod Exlaunch: replaces or adds modules (subsdk3)') for s in said), said)
++            self.assertFalse(any('Switched off' in s for s in said), said)
++            with self.assertRaises(nsp.BuildError): nsp.code_mods(Path(tmp, 'none'), exefs, ['main'])
++
++
++class Rewriter(unittest.TestCase):
++    """patch_nso.py writes the mods for its module's build before it reads the code: a mod's instruction that names no x18 runs as the mod has it, the module's own is rewritten"""
++    def module(self):   # test_nro_header's NRO: mov x18, x0; ret at 0x80, read-only data from 0x1000
++        raw = image({0x80: [0xaa0003f2, RET]})
++        raw[0x1100:0x111c] = raw[0x20:0x3c]
++        struct.pack_into('<I', raw, 4, 0x1100)
++        struct.pack_into('<ii', raw, 0x1110, 0x3000 - 0x1100, 0x3014 - 0x1100)
++        raw[0x10:0x14] = b'NRO0'
++        struct.pack_into('<I', raw, 0x18, len(raw))
++        struct.pack_into('<6I', raw, 0x20, 0, 0x1000, 0x1000, 0x2000, 0x3000, 0x1000)
++        struct.pack_into('<I', raw, 0x38, 0)
++        raw[0x40:0x50] = bytes.fromhex(BID[:32])
++        return raw
++
++    def rewrite(self, tmp, mods):
++        src = Path(tmp) / 'input.nro'; src.write_bytes(self.module())
++        out = Path(tmp) / 'out'; out.mkdir(exist_ok=True)
++        env = {k: v for k, v in os.environ.items() if k != 'DM_EXEFS_MODS'} | {'DM_GAME': '010015100B514000'}
++        if mods: env['DM_EXEFS_MODS'] = os.pathsep.join(str(m) for m in mods)
++        return subprocess.run([sys.executable, str(TOOLS / 'patch_nso.py'), str(src), str(out), 'main'], env=env, capture_output=True, text=True), out
++
++    def test_mod_written_before_the_rewrite(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            write(Path(tmp, 'mods/fps/exefs/x.pchtxt'), f'@nsobid-{BID}\n@flag offset_shift 0x100\n@enabled\n00000080 E10300AA\n00001800 DEADBEEF\n')
++            write(Path(tmp, 'mods/other/exefs/y.pchtxt'), '@nsobid-0123\n@flag offset_shift 0x100\n@enabled\n00001800 00000000\n')   # another build: not applied
++            run, out = self.rewrite(tmp, [Path(tmp, 'mods/fps'), Path(tmp, 'mods/other')])
++            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
++            patched = (out / 'main.patched.bin').read_bytes()
++            self.assertEqual(patched[0x80:0x84], bytes.fromhex('e10300aa'))   # mov x1, x0: no x18, nothing to rewrite
++            self.assertEqual(patched[0x1800:0x1804], bytes.fromhex('deadbeef'))
++            rows = [l.split('\t') for l in (out / 'main.mods.tsv').read_text().splitlines() if not l.startswith('#')]
++            self.assertEqual([r[:3] for r in rows], [['fps', '0x80', 'e10300aa'], ['fps', '0x1800', 'deadbeef']])
++            self.assertIn('main: code mods: fps (2 patches)', run.stdout)
++
++            run, out = self.rewrite(tmp, [])   # without mods the module's own x18 instruction is rewritten and no list is written
++            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
++            self.assertNotEqual((out / 'main.patched.bin').read_bytes()[0x80:0x84], bytes.fromhex('f20300aa'))
++            self.assertFalse((out / 'main.mods.tsv').exists())
++
++    def test_a_mod_that_names_x18_is_rewritten_too(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            write(Path(tmp, 'mods/fps/exefs/x.pchtxt'), f'@nsobid-{BID}\n@flag offset_shift 0x100\n@enabled\n00000080 F20301AA\n')   # mov x18, x1
++            run, out = self.rewrite(tmp, [Path(tmp, 'mods/fps')])
++            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
++            self.assertNotEqual((out / 'main.patched.bin').read_bytes()[0x80:0x84], bytes.fromhex('f20301aa'))
++
++    def test_a_write_past_the_module_stops_with_a_red_line(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            write(Path(tmp, 'mods/big/exefs/x.pchtxt'), f'@nsobid-{BID}\n@flag offset_shift 0x100\n@enabled\n00100000 00\n')
++            run, _ = self.rewrite(tmp, [Path(tmp, 'mods/big')])
++            self.assertNotEqual(run.returncode, 0)
++            self.assertIn('[RED] main: code mod big', run.stderr)
++            self.assertNotIn('Traceback', run.stderr)
++
++
++if __name__ == '__main__': unittest.main()
+diff --git a/docs/development.md b/docs/development.md
+index 98ffcae..35776e0 100644
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -388,6 +388,11 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/BreathOfTheWild -k ~/keys/prod.key
+ # a diagnostic build with environment switches baked in (one KEY=VALUE per line)
+ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --env-file diag_env.txt
+ 
++# code mods: a folder of mods, one folder each as yuzu has them; the .pchtxt and .ips patches in their exefs/ go into the module whose build ID they name before the rewrite (dm/tools/exefs_mods.py,
++# listed in patched_<version>/<module>.mods.tsv); a mod for another version of the game is named and not used, a name that starts with a dot is switched off, exlaunch mods (exefs/subsdk*) are skipped;
++# RomFS files are not packed: DM_ROMFS_OVERLAY reads them at run time (the launchers' mods folders)
++python3 scripts/build_ipa_from_nsp.py ~/Games/PokemonScarlet -k ~/keys/prod.keys --mods ~/Games/PokemonScarlet/mods
++
+ # a damaged NSP (files failing the NCA's hash check), or a NUP or dump whose .zs files are not zstd streams, stops the build after listing them; this packs those files as read
+ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --allow-damaged
+ 
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 0e47a44..782877a 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -39,6 +39,7 @@ DM_ENV_FILE	path	`=<file>` makes `build_ipa.sh` bake its `KEY=VALUE` lines into
+ DM_ENV_FILE_KEYS	switch	Set by the iOS app and the Mac launcher at launch to the space-separated names an env file set; the settings screen keeps those values and shows them greyed out
+ DM_ENV_LAUNCH_KEYS	switch	Set at launch by the Mac launcher (the launcher settings already in the environment) and the iOS app (every DM_* variable already in it) to the space-separated names; the settings screen keeps those values and shows them greyed out
+ DM_EXEC_OUT	path	File `oe::ExecuteProgram` records the next program and its parameters in, then the app ends (the iOS app of a game of several programs sets it to `Documents/program.bin`)
++DM_EXEFS_MODS	path	`=<mod>[:<mod>…]` (`;` on Windows): `patch_nso.py` writes the code patches of these mod folders (`.pchtxt` and `.ips` in `exefs/`, `exefs_patches/<name>/` or `atmosphere/exefs_patches/<name>/`) into the module whose build ID they name before it rewrites it, and lists them in `<module>.mods.tsv` (`exefs_mods.py`); the NSP script sets it from `--mods` / `MODS`
+ DM_EXPERIMENTAL_BUILDER	switch	`1` makes the NSP script run the extraction and the shader split through nxbuild's binaries beside `NXB_BIN` (the path of its `nxb` binary) where nxbuild supports the case, with the same outputs; any other case, an unsupported stage or an output that fails the checks runs the standard way (the Mac launcher's Use experimental builder setting)
+ DM_FD_LOG	diagnostic	`=<seconds>` logs, every that many seconds, the number and kinds of file descriptors the process has open
+ DM_FIXED_TIME	switch	`=<seconds>`: the user clock always returns that time and the host time zone is pinned to UTC, for deterministic comparison
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index e642c8a..b61be30 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -70,6 +70,8 @@ LANGUAGE = ''                           # game language, a code or a name: 'ja',
+                                         #   DM_LANG=<code> in the app's Documents/env.txt changes it without a rebuild
+ KEEP_EXTRACTED = True                   # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files); False deletes them
+ DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
++MODS = ''                               # optional: a folder of mods, one folder each; their code patches (.pchtxt, .ips in exefs/) go into the modules of the build they name before the rewrite (dm/tools/exefs_mods.py);
++                                        #   a name that starts with a dot is switched off; their RomFS files are not packed (DM_ROMFS_OVERLAY reads them at run time)
+ SEEN_SHADERS = False                    # PLATFORM 'mac' / 'mac-app': build only the shaders the profile's playtests used (shader_seen.tsv) and those the last runs' logs reported missing, not the whole map; areas the list does not cover draw without the rest until this runs again
+ PSO_GPUS = ''                           # NVN games: GPU architectures the app gets the shader pairs' pipeline bases for, made on this Mac (metal-tt, comma-separated: 'g18p' = A19 / A19 Pro of the iPhone 17 family;
+                                         #   another device's name is in its log when the app has none for it), so the device does not build them on its first start; each adds about 650 MB to the app (Breath of the Wild) and minutes to a first build; 'none' = no archive;
+@@ -1670,6 +1672,25 @@ def nro_modules(g, exe_dir, nros):
+     return set_keys(g, {'modules': (' '.join(mods), f'the NROs the game loads at run time import from {why}, which main does not')}, 'After the NRO collection')
+ 
+ 
++def code_mods(root, exe_dir, mods):
++    """The mods of root (--mods / MODS, dm/tools/exefs_mods.py) whose code patches name the build of one of the modules in exe_dir, in name order, for DM_EXEFS_MODS. Says what each mod
++    does in this build: which module it patches, or that its patches are for another build (another version of the game), or that it replaces modules, which the rewriter does not take"""
++    if not root.is_dir(): raise BuildError(f'no such folder of mods (--mods / MODS): {root}')
++    import exefs_mods
++    have = {build_id(exe_dir / m): m for m in mods if (exe_dir / m).is_file()}
++    picked = []
++    for mod in exefs_mods.mod_folders(root):
++        name, ids = Path(mod).name, exefs_mods.mod_ids(mod)
++        if replaced := exefs_mods.replaced_modules(mod): say(f'mod {name}: replaces or adds modules ({", ".join(replaced)}), which the rewriter does not take: not used')
++        hits = sorted(have[b] for b in ids if b in have)
++        if hits:
++            picked.append(mod); say(f'mod {name}: code patches for {", ".join(hits)}')
++        elif ids and not replaced:
++            say(f'[RED] mod {name}: its code patches are for build{"s" if len(ids) > 1 else ""} {", ".join(sorted(b or "(none named)" for b in ids))}, which no module of this version has '
++                f'({", ".join(f"{m} {b}" for b, m in have.items())}): not used')
++    return picked
++
++
+ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
+     """patch_nso.py on every code module (each writes its own <module>.* files, all the same build_src.sha256 line), each with its log, as many at once as the Mac has cores.
+     The modules are the profile's and the NROs the game registers (collect_nros; nro.tsv beside them lists those); a provisional profile first gets the subsdks those NROs import from (nro_modules).
+@@ -1691,8 +1712,12 @@ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
+     # the repository profile's build rows decide which builds the rewriter treats as the game's own (SDK-wide function patches skip those), and its snowdrop_pools the sizes of those cuts, so they are inputs too
+     try: own = [l for l in (repo / 'dm/games' / Path(env.get('DM_GAME') or '-').name / 'game.tsv').read_text(encoding='utf-8').splitlines() if l.startswith(('build\t', 'snowdrop_pools\t'))]
+     except OSError: own = []
++    # code mods (code_mods): their folders and patch files, only when there are some, so a build without mods keeps its key
++    import exefs_mods
++    mod_dirs = [d for d in env.get('DM_EXEFS_MODS', '').split(os.pathsep) if d]
++    with_mods = (('files', [repo / 'dm/tools/exefs_mods.py'] + [Path(p) for d in mod_dirs for p in exefs_mods.patch_files(d)]), mod_dirs) if mod_dirs else ()
+     key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_match.py', 'ue_cvar.py', 'ue_malloc.py', 'ue_region.py', 'ue_ring.py', 'snowdrop_pools.py', 'loader_census.py', 'fps_target.py', 'ue_fixed_rate.py', 'unity_fps.py', 'unity_bucket.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+-                      {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')}, own)
++                      {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')}, own, *with_mods)
+     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
+         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)')
+         return capture_nro(py, repo, exe_dir, out, nro_dir, env, logs, g, provisional)
+@@ -3098,6 +3123,8 @@ def parse_args(argv):
+     ap.add_argument('--keep-extracted', action=argparse.BooleanOptionalAction, help='keep the extracted game files after the IPA is built, for the next build (default: the KEEP_EXTRACTED setting, on)')
+     ap.add_argument('--work-dir', help='the game\'s build folder, used as it is (default: the WORK_DIR setting, else <title ID>_build in the NSP folder); the extracted files, shader cache and temporary files live there, and the IPA or Mac app defaults to the folder holding it')
+     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
++    ap.add_argument('--mods', help='a folder of mods, one folder each (yuzu\'s layout): the code patches in their exefs/ (.pchtxt, .ips, for the build ID they name) go into the game\'s modules before the rewrite; '
++                    'a mod whose name starts with a dot is switched off, a mod that replaces modules (exlaunch\'s subsdk and main.npdm) is skipped, RomFS files are not packed (default: the MODS setting)')
+     ap.add_argument('--gpu', help='NVN games: GPU architectures the app gets its pipeline archive for, made on this Mac with metal-tt, comma-separated: g18p (A19 / A19 Pro), or the name a device\'s log gives when the app has no archive for its GPU; '
+                     'none = no archive, the device builds the bases on its first start (default: the PSO_GPUS setting; when that is empty, a profile with pso_mtl4 on uses its pso_gpu key or g18p, and other profiles use none). '
+                     'With --platform mac-app: the Mac app\'s archive, by default for this Mac\'s GPU (none: the app builds the bases on its first start)')
+@@ -3405,7 +3432,14 @@ def main(args=None):
+         + (f'; the game\'s languages: {" ".join(have)}' if have else '; the control data lists no languages (not checked)') + (' (DM_LANG=<code> in the run command changes it)' if mac else ' (DM_LANG=<code> in the app\'s Documents/env.txt changes it)'))
+ 
+     patched = work / f'patched_{pkg_ver}'
++    env.pop('DM_EXEFS_MODS', None)   # only --mods / MODS choose the code mods of a build
++    if args.mods or MODS:
++        picked = code_mods(Path(os.path.expanduser(args.mods or MODS)).resolve(), game / 'ExeFS', g.modules_in(game / 'ExeFS'))
++        if picked: env['DM_EXEFS_MODS'] = os.pathsep.join(picked)
+     g = rewrite(py, repo, game / 'ExeFS', patched, env, logs, g, provisional)
++    for t in sorted(patched.glob('*.mods.tsv')):   # patch_nso.py's list of the code mods' patches it wrote
++        rows = [l.split('\t') for l in t.read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
++        say(f'{t.name.removesuffix(".mods.tsv")}: code mods {", ".join(dict.fromkeys(r[0] for r in rows))} ({len(rows)} patches, {sum(len(r[2]) // 2 for r in rows)} bytes)')
+     if nd := captured_nros(patched): env = dict(env, DM_NRO_DIR=str(nd))
+     chain_header(py, repo, env, logs)   # before any host is built
+     if provisional or derived:   # the keys that need the rewritten modules, then (provisional) the heap check (both only change keys the host is built with, not the rewrite or the shader steps)
